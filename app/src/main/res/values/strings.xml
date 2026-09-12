@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">RC Vehicle Control</string>
+    <string name="mode_picker_title">Kies modus</string>
+    <string name="mode_controller">Besturing</string>
+    <string name="mode_vehicle">Voertuig</string>
+    <string name="controller_placeholder">Controller-modus (nog te bouwen: joystick + video)</string>
+    <string name="vehicle_placeholder">Vehicle-modus (nog te bouwen: servo-bridge + camera)</string>
+</resources>
