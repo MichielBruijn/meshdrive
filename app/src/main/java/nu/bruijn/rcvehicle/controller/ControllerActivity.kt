@@ -4,6 +4,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.widget.Button
 import android.widget.EditText
 import android.widget.SeekBar
@@ -15,18 +17,23 @@ import kotlinx.coroutines.launch
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.control.ControlLink
 import nu.bruijn.rcvehicle.mode.ModePrefs
+import nu.bruijn.rcvehicle.video.VideoPacket
+import nu.bruijn.rcvehicle.video.VideoReceiver
 
 /**
  * Fase 4 debug UI: sends steer/throttle to the vehicle over a direct UDP socket to
- * its known Yggdrasil address (see ControlLink's doc for why this replaced the
- * originally-planned WebRTC data channel - stream-webrtc-android's ICE never
- * surfaces the Yggdrasil tun interface on a cellular-only phone, confirmed via
- * extensive real-hardware testing 2026-09-13).
+ * its known Yggdrasil address, and renders the video the vehicle sends back once
+ * it has learned this phone's address from that same control traffic (see
+ * ControlLink's/VideoSender's docs for why these are plain UDP sockets instead of
+ * the originally-planned WebRTC data channel/video track - stream-webrtc-android's
+ * ICE never surfaces the Yggdrasil tun interface on a cellular-only phone,
+ * confirmed via extensive real-hardware testing 2026-09-13).
  */
 class ControllerActivity : AppCompatActivity() {
 
     private lateinit var modePrefs: ModePrefs
     private val controlLink = ControlLink()
+    private val videoReceiver = VideoReceiver()
     private val tickHandler = Handler(Looper.getMainLooper())
     private var tickRunnable: Runnable? = null
     private var seq = 0
@@ -40,6 +47,7 @@ class ControllerActivity : AppCompatActivity() {
         val logView = findViewById<TextView>(R.id.textRtcLog)
         val seekSteer = findViewById<SeekBar>(R.id.seekSteer)
         val seekThrottle = findViewById<SeekBar>(R.id.seekThrottle)
+        val surfaceVideo = findViewById<SurfaceView>(R.id.surfaceVideo)
 
         lifecycleScope.launch {
             modePrefs.pairedYggdrasilAddress.collect { saved ->
@@ -51,6 +59,28 @@ class ControllerActivity : AppCompatActivity() {
             Log.d("RCDebug", line)
             logView.append(line + "\n")
         }
+
+        videoReceiver.onError = { msg -> log("video: $msg") }
+
+        // Start listening for video as soon as the surface exists - independent of
+        // "Verbinden", since it's the vehicle that learns OUR address (from control
+        // traffic) and initiates the video stream, not the other way around.
+        surfaceVideo.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                try {
+                    videoReceiver.start(VideoPacket.PORT, holder.surface)
+                    log("listening for video on port ${VideoPacket.PORT}")
+                } catch (e: Exception) {
+                    log("video listen failed: ${e::class.simpleName}: ${e.message}")
+                }
+            }
+
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                videoReceiver.stop()
+            }
+        })
 
         findViewById<Button>(R.id.buttonConnectRtc).setOnClickListener {
             val address = editAddress.text.toString().trim()
@@ -94,6 +124,7 @@ class ControllerActivity : AppCompatActivity() {
     override fun onDestroy() {
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
         controlLink.close()
+        videoReceiver.stop()
         super.onDestroy()
     }
 }

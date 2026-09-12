@@ -24,9 +24,11 @@ import java.net.InetAddress
  * and the TCP signaling channel), we don't need ICE's dynamic NAT-traversal
  * discovery at all for this - it was solving a problem we don't have.
  *
- * WebRTC (RtcClient) is kept for a future video track, where its media pipeline
- * earns its complexity - that will need its own fix for the same ICE/VPN problem
- * when the time comes.
+ * Video (plan section 4's other half) hit the identical ICE/VPN problem and was
+ * likewise moved off WebRTC onto plain UDP - see video/VideoSender.kt and
+ * video/VideoReceiver.kt. RtcClient/the signaling classes are left unused in the
+ * codebase for now rather than deleted, in case a future library fix makes them
+ * viable again.
  */
 class ControlLink {
     private var socket: DatagramSocket? = null
@@ -58,8 +60,13 @@ class ControlLink {
         }
     }
 
-    /** Vehicle side: bind and receive control frames from whoever sends them. */
-    fun listen(port: Int, onReceived: (ControlFrame.Decoded) -> Unit) {
+    /**
+     * Vehicle side: bind and receive control frames from whoever sends them.
+     * onReceived also gets the packet's source address, so the vehicle can learn
+     * the controller's Yggdrasil address from its control traffic and use it as
+     * the destination for the video stream, without a separate discovery step.
+     */
+    fun listen(port: Int, onReceived: (ControlFrame.Decoded, InetAddress) -> Unit) {
         val sock = DatagramSocket(port)
         socket = sock
         receiveJob = scope.launch {
@@ -68,7 +75,7 @@ class ControlLink {
             while (isActive) {
                 try {
                     sock.receive(packet)
-                    ControlFrame.decode(packet.data, packet.length)?.let(onReceived)
+                    ControlFrame.decode(packet.data, packet.length)?.let { onReceived(it, packet.address) }
                 } catch (_: Exception) {
                     if (!isActive) break
                 }

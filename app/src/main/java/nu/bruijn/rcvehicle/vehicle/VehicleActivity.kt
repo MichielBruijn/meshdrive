@@ -1,9 +1,11 @@
 package nu.bruijn.rcvehicle.vehicle
 
+import android.Manifest
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -14,6 +16,8 @@ import android.widget.EditText
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -21,16 +25,21 @@ import kotlinx.coroutines.withContext
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.common.YggdrasilAddress
 import nu.bruijn.rcvehicle.control.ControlLink
+import nu.bruijn.rcvehicle.video.VideoPacket
+import nu.bruijn.rcvehicle.video.VideoSender
+import java.net.InetAddress
 
 /**
  * Debug UI: fase 2 (wifi-to-ESP32, top half) drives ServoBridge with two sliders,
  * fase 4 (UDP control link over Yggdrasil, bottom half) listens for the controller
  * and relays whatever it receives into the SAME ServoBridge - so with both
  * sections connected at once this is already a real end-to-end controller-phone ->
- * vehicle-phone -> ESP32 path, just without video yet.
+ * vehicle-phone -> ESP32 path. Video starts automatically the moment the first
+ * control packet arrives, since that's how this side learns the controller's
+ * Yggdrasil address (see ControlLink.listen's doc) - no separate video-connect step.
  *
- * See ControlLink's doc for why this is a plain UDP socket instead of the
- * originally-planned WebRTC data channel.
+ * See ControlLink's/VideoSender's docs for why these are plain UDP sockets instead
+ * of the originally-planned WebRTC data channel/video track.
  */
 class VehicleActivity : AppCompatActivity() {
 
@@ -39,6 +48,8 @@ class VehicleActivity : AppCompatActivity() {
     private val tickHandler = Handler(Looper.getMainLooper())
     private var tickRunnable: Runnable? = null
     private val controlLink = ControlLink()
+    private val videoSender = VideoSender(this)
+    private var videoStarted = false
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -71,6 +82,12 @@ class VehicleActivity : AppCompatActivity() {
             logView.append(line + "\n")
         }
 
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1)
+        }
+
         findViewById<Button>(R.id.buttonConnect).setOnClickListener {
             service?.connectToEsp(editIp.text.toString().trim())
         }
@@ -84,14 +101,17 @@ class VehicleActivity : AppCompatActivity() {
             }
         }
 
+        videoSender.onError = { msg -> log("video: $msg") }
+
         findViewById<Button>(R.id.buttonListen).setOnClickListener {
             controlLink.close()
             logView.text = ""
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
-                    controlLink.listen(ControlLink.PORT) { decoded ->
+                    controlLink.listen(ControlLink.PORT) { decoded, senderAddress ->
                         log("control #${decoded.seq}: steer=${decoded.steer} throttle=${decoded.throttle}")
                         service?.servoBridge?.sendControl(decoded.steer, decoded.throttle)
+                        maybeStartVideo(senderAddress, ::log)
                     }
                     log("listening for UDP control on port ${ControlLink.PORT}")
                 } catch (e: Exception) {
@@ -132,9 +152,23 @@ class VehicleActivity : AppCompatActivity() {
         bindService(intent, connection, Context.BIND_AUTO_CREATE)
     }
 
+    private fun maybeStartVideo(controllerAddress: InetAddress, log: (String) -> Unit) {
+        if (videoStarted) return
+        videoStarted = true
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            log("video: CAMERA permission not granted, skipping")
+            return
+        }
+        log("starting video to ${controllerAddress.hostAddress}")
+        videoSender.start(controllerAddress.hostAddress!!, VideoPacket.PORT)
+    }
+
     override fun onDestroy() {
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
         controlLink.close()
+        videoSender.stop()
         if (bound) {
             unbindService(connection)
             bound = false
