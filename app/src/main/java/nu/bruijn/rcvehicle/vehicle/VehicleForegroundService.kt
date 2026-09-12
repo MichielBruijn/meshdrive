@@ -35,6 +35,7 @@ class VehicleForegroundService : Service() {
 
     var onStatus: ((String) -> Unit)? = null
     private var espIp: String = "192.168.4.1"
+    private var networkJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -58,11 +59,18 @@ class VehicleForegroundService : Service() {
         return START_STICKY
     }
 
-    /** Call once the user has entered/confirmed the ESP32's IP (bench-test debug UI). */
+    /**
+     * Call once the user has entered/confirmed the ESP32's IP (bench-test debug UI).
+     * Cancels any previous network observation first - without this, tapping
+     * "Verbinden" more than once left earlier requestNetwork() registrations running
+     * alongside the new one, each independently restarting ServoBridge's websocket
+     * whenever its own onAvailable fired, which looked like random servo jitter.
+     */
     fun connectToEsp(ip: String) {
         espIp = ip
+        networkJob?.cancel()
         onStatus?.invoke("requesting wifi network…")
-        serviceScope.launch {
+        networkJob = serviceScope.launch {
             networkBinder.observe().collect { state ->
                 when (state) {
                     is EspWifiNetworkBinder.State.Requesting ->

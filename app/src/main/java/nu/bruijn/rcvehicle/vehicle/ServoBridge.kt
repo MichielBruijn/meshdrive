@@ -13,7 +13,34 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.net.InetAddress
+import java.net.Socket
 import java.util.concurrent.TimeUnit
+import javax.net.SocketFactory
+
+/**
+ * Wraps a SocketFactory to force TCP_NODELAY on every socket it creates. Without
+ * this, Nagle's algorithm batches our small, frequent PosJ frames and interacts
+ * with the ESP32's delayed ACKs, adding ~40-200ms of irregular stall - invisible
+ * while holding a steady value, but very visible as stutter while a value is
+ * actively changing (i.e. exactly "jerky while dragging, smooth at rest", which is
+ * what gave this away). Browsers set TCP_NODELAY on websockets automatically;
+ * OkHttp does not, so it has to be done explicitly here.
+ */
+private class NoDelaySocketFactory(private val delegate: SocketFactory) : SocketFactory() {
+    private fun Socket.noDelay() = apply { tcpNoDelay = true }
+
+    override fun createSocket() = delegate.createSocket().noDelay()
+    override fun createSocket(host: String?, port: Int) =
+        delegate.createSocket(host, port).noDelay()
+    override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int) =
+        delegate.createSocket(host, port, localHost, localPort).noDelay()
+    override fun createSocket(host: InetAddress?, port: Int) =
+        delegate.createSocket(host, port).noDelay()
+    override fun createSocket(
+        address: InetAddress?, port: Int, localAddress: InetAddress?, localPort: Int
+    ) = delegate.createSocket(address, port, localAddress, localPort).noDelay()
+}
 
 /**
  * Talks to the ESP32's Joystick Mode (plan section 5): GET /joystick/on once to force
@@ -47,7 +74,7 @@ class ServoBridge(
         stop() // clean up any previous connection first
 
         val okHttpClient = OkHttpClient.Builder()
-            .socketFactory(network.socketFactory)
+            .socketFactory(NoDelaySocketFactory(network.socketFactory))
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS) // no read timeout - this is a long-lived websocket
             .build()
