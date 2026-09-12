@@ -6,9 +6,9 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.Handler
-import android.util.Log
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import android.widget.Button
 import android.widget.EditText
 import android.widget.SeekBar
@@ -16,23 +16,21 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.common.YggdrasilAddress
-import nu.bruijn.rcvehicle.rtc.RtcClient
-import nu.bruijn.rcvehicle.signaling.SignalingMessage
-import nu.bruijn.rcvehicle.signaling.SignalingServer
-import org.webrtc.IceCandidate
-import org.webrtc.SessionDescription
+import nu.bruijn.rcvehicle.control.ControlLink
 
 /**
  * Debug UI: fase 2 (wifi-to-ESP32, top half) drives ServoBridge with two sliders,
- * fase 4 (WebRTC over Yggdrasil, bottom half) listens for the controller and
- * relays whatever it receives into the SAME ServoBridge - so with both sections
- * connected at once this is already a real end-to-end controller-phone ->
+ * fase 4 (UDP control link over Yggdrasil, bottom half) listens for the controller
+ * and relays whatever it receives into the SAME ServoBridge - so with both
+ * sections connected at once this is already a real end-to-end controller-phone ->
  * vehicle-phone -> ESP32 path, just without video yet.
+ *
+ * See ControlLink's doc for why this is a plain UDP socket instead of the
+ * originally-planned WebRTC data channel.
  */
 class VehicleActivity : AppCompatActivity() {
 
@@ -40,10 +38,7 @@ class VehicleActivity : AppCompatActivity() {
     private var bound = false
     private val tickHandler = Handler(Looper.getMainLooper())
     private var tickRunnable: Runnable? = null
-
-    private var signalingServer: SignalingServer? = null
-    private var rtcClient: RtcClient? = null
-    private var listenJob: Job? = null
+    private val controlLink = ControlLink()
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -90,51 +85,17 @@ class VehicleActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.buttonListen).setOnClickListener {
-            listenJob?.cancel()
-            signalingServer?.close()
-            rtcClient?.close()
+            controlLink.close()
             logView.text = ""
-
-            listenJob = lifecycleScope.launch {
-                log("listening on port ${SignalingMessage.PORT}…")
-                val server = SignalingServer().also { signalingServer = it }
-                val session = try {
-                    server.acceptSession()
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    controlLink.listen(ControlLink.PORT) { decoded ->
+                        log("control #${decoded.seq}: steer=${decoded.steer} throttle=${decoded.throttle}")
+                        service?.servoBridge?.sendControl(decoded.steer, decoded.throttle)
+                    }
+                    log("listening for UDP control on port ${ControlLink.PORT}")
                 } catch (e: Exception) {
-                    log("accept failed: ${e.message}")
-                    return@launch
-                }
-                log("controller connected")
-
-                val rtc = RtcClient(applicationContext).also { rtcClient = it }
-                rtc.onIceCandidate = { candidate ->
-                    log("local ICE candidate: ${candidate.sdp}")
-                    lifecycleScope.launch {
-                        session.send(SignalingMessage.Ice(candidate.sdpMid, candidate.sdpMLineIndex, candidate.sdp))
-                    }
-                }
-                rtc.onIceConnectionChange = { state -> log("ICE state: $state") }
-                rtc.onIceGatheringChange = { state -> log("ICE gathering: $state") }
-                rtc.onDataChannelOpen = { log("data channel OPEN") }
-                rtc.onControlReceived = { steer, throttle, seq ->
-                    log("control #$seq: steer=$steer throttle=$throttle")
-                    service?.servoBridge?.sendControl(steer, throttle)
-                }
-                rtc.createPeerConnection()
-
-                session.messages().collect { msg ->
-                    when (msg) {
-                        is SignalingMessage.Offer -> {
-                            rtc.setRemoteDescription(SessionDescription(SessionDescription.Type.OFFER, msg.sdp))
-                            val answer = rtc.createAnswer()
-                            session.send(SignalingMessage.Answer(answer.description))
-                            log("answer sent")
-                        }
-                        is SignalingMessage.Ice -> {
-                            rtc.addIceCandidate(IceCandidate(msg.sdpMid, msg.sdpMLineIndex, msg.candidate))
-                        }
-                        else -> {}
-                    }
+                    log("listen failed: ${e::class.simpleName}: ${e.message}")
                 }
             }
         }
@@ -151,7 +112,7 @@ class VehicleActivity : AppCompatActivity() {
         seekThrottle.setOnSeekBarChangeListener(listener)
 
         // Send on a fixed 20Hz tick regardless of whether the value changed - matches
-        // the plan's eventual WebRTC data-channel design (section 4). Sending only on
+        // the plan's eventual data-channel design (section 4). Sending only on
         // SeekBar's own onProgressChanged events was the earlier bug: touch-move events
         // don't fire at a guaranteed steady rate, so gaps over 300ms kept tripping
         // ServoBridge's own failsafe mid-drag, snapping to center and back - that's the
@@ -173,9 +134,7 @@ class VehicleActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
-        listenJob?.cancel()
-        signalingServer?.close()
-        rtcClient?.close()
+        controlLink.close()
         if (bound) {
             unbindService(connection)
             bound = false

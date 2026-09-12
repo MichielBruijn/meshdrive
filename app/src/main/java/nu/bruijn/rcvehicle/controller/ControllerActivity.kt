@@ -10,28 +10,23 @@ import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import nu.bruijn.rcvehicle.R
+import nu.bruijn.rcvehicle.control.ControlLink
 import nu.bruijn.rcvehicle.mode.ModePrefs
-import nu.bruijn.rcvehicle.rtc.RtcClient
-import nu.bruijn.rcvehicle.signaling.SignalingClient
-import nu.bruijn.rcvehicle.signaling.SignalingMessage
-import org.webrtc.IceCandidate
-import org.webrtc.PeerConnection
-import org.webrtc.SessionDescription
 
 /**
- * Fase 4 debug UI (plan section 3-4): connects to the vehicle over a direct
- * Yggdrasil TCP socket, exchanges SDP/ICE, then drives a WebRTC data channel with
- * two sliders. No video track yet - that's the plan's next pass, once this proves
- * host-candidate ICE actually works over the Yggdrasil tun interface.
+ * Fase 4 debug UI: sends steer/throttle to the vehicle over a direct UDP socket to
+ * its known Yggdrasil address (see ControlLink's doc for why this replaced the
+ * originally-planned WebRTC data channel - stream-webrtc-android's ICE never
+ * surfaces the Yggdrasil tun interface on a cellular-only phone, confirmed via
+ * extensive real-hardware testing 2026-09-13).
  */
 class ControllerActivity : AppCompatActivity() {
 
     private lateinit var modePrefs: ModePrefs
-    private var rtcClient: RtcClient? = null
-    private var signalingJob: Job? = null
+    private val controlLink = ControlLink()
     private val tickHandler = Handler(Looper.getMainLooper())
     private var tickRunnable: Runnable? = null
     private var seq = 0
@@ -61,54 +56,15 @@ class ControllerActivity : AppCompatActivity() {
             val address = editAddress.text.toString().trim()
             if (address.isEmpty()) return@setOnClickListener
 
-            signalingJob?.cancel()
-            rtcClient?.close()
+            lifecycleScope.launch { modePrefs.setPairedYggdrasilAddress(address) }
             logView.text = ""
-
-            signalingJob = lifecycleScope.launch {
-                lifecycleScope.launch { modePrefs.setPairedYggdrasilAddress(address) }
-                log("connecting signaling socket to $address:${SignalingMessage.PORT}…")
-                val session = try {
-                    SignalingClient().connect(address)
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    controlLink.connect(address, ControlLink.PORT)
+                    log("UDP control link connected to $address:${ControlLink.PORT}")
                 } catch (e: Exception) {
-                    log("signaling connect failed: ${e.message}")
-                    return@launch
+                    log("connect failed: ${e::class.simpleName}: ${e.message}")
                 }
-                log("signaling connected")
-
-                val rtc = RtcClient(applicationContext).also { rtcClient = it }
-                rtc.onIceCandidate = { candidate ->
-                    log("local ICE candidate: ${candidate.sdp}")
-                    lifecycleScope.launch {
-                        session.send(SignalingMessage.Ice(candidate.sdpMid, candidate.sdpMLineIndex, candidate.sdp))
-                    }
-                }
-                rtc.onIceConnectionChange = { state -> log("ICE state: $state") }
-                rtc.onIceGatheringChange = { state -> log("ICE gathering: $state") }
-                rtc.onDataChannelOpen = { log("data channel OPEN") }
-                rtc.createPeerConnection()
-                rtc.createControlDataChannel()
-
-                lifecycleScope.launch {
-                    session.messages().collect { msg ->
-                        when (msg) {
-                            is SignalingMessage.Answer -> {
-                                rtc.setRemoteDescription(
-                                    SessionDescription(SessionDescription.Type.ANSWER, msg.sdp)
-                                )
-                                log("remote answer set")
-                            }
-                            is SignalingMessage.Ice -> {
-                                rtc.addIceCandidate(IceCandidate(msg.sdpMid, msg.sdpMLineIndex, msg.candidate))
-                            }
-                            else -> {}
-                        }
-                    }
-                }
-
-                val offer = rtc.createOffer()
-                session.send(SignalingMessage.Offer(offer.description))
-                log("offer sent")
             }
         }
 
@@ -118,7 +74,7 @@ class ControllerActivity : AppCompatActivity() {
             override fun run() {
                 val steer = (seekSteer.progress - 100) / 100f
                 val throttle = (seekThrottle.progress - 100) / 100f
-                rtcClient?.sendControl(steer, throttle, seq++)
+                controlLink.send(steer, throttle, seq++)
                 tickHandler.postDelayed(this, 30)
             }
         }
@@ -137,7 +93,7 @@ class ControllerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
-        rtcClient?.close()
+        controlLink.close()
         super.onDestroy()
     }
 }
