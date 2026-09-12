@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.Handler
+import android.util.Log
 import android.os.IBinder
 import android.os.Looper
 import android.widget.Button
@@ -70,7 +71,10 @@ class VehicleActivity : AppCompatActivity() {
         val textOwnAddress = findViewById<TextView>(R.id.textOwnYggdrasilAddress)
         val logView = findViewById<TextView>(R.id.textRtcLog)
 
-        fun log(line: String) = runOnUiThread { logView.append(line + "\n") }
+        fun log(line: String) = runOnUiThread {
+            Log.d("RCDebug", line)
+            logView.append(line + "\n")
+        }
 
         findViewById<Button>(R.id.buttonConnect).setOnClickListener {
             service?.connectToEsp(editIp.text.toString().trim())
@@ -110,6 +114,7 @@ class VehicleActivity : AppCompatActivity() {
                     }
                 }
                 rtc.onIceConnectionChange = { state -> log("ICE state: $state") }
+                rtc.onIceGatheringChange = { state -> log("ICE gathering: $state") }
                 rtc.onDataChannelOpen = { log("data channel OPEN") }
                 rtc.onControlReceived = { steer, throttle, seq ->
                     log("control #$seq: steer=$steer throttle=$throttle")

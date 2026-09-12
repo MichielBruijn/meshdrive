@@ -7,6 +7,7 @@ import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
+import org.webrtc.NetworkMonitor
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.SdpObserver
@@ -19,9 +20,38 @@ import kotlin.coroutines.resumeWithException
 /**
  * Shared PeerConnection wrapper for both controller and vehicle (plan section 4).
  * No STUN/TURN servers - Yggdrasil already solved NAT traversal at the network
- * layer, so ICE only ever gathers host candidates. `networkIgnoreMask = 0` is set
- * explicitly (matching the library default) so a future version bump can't
- * silently start filtering out the Yggdrasil tun interface's ADAPTER_TYPE_VPN.
+ * layer, so ICE only ever gathers host candidates.
+ *
+ * CONFIRMED ON REAL HARDWARE (2026-09-13, Pixel 9 Pro <-> Samsung A52s): the
+ * original plan assumption ("networkIgnoreMask = 0 should surface the Yggdrasil
+ * tun interface like any other") was WRONG, and no per-app trick fixes it -
+ * confirmed via logcat that org.webrtc.NetworkMonitorAutoDetect issues its
+ * ConnectivityManager.registerNetworkCallback() request with NET_CAPABILITY_NOT_VPN
+ * hardcoded by default, so the Yggdrasil VPN network is never even discovered
+ * (networkIgnoreMask only filters networks AFTER discovery; bindProcessToNetwork()
+ * doesn't affect this either - it's a separate registerNetworkCallback subscription
+ * unrelated to the process's default network). The library's own source
+ * (NetworkMonitorAutoDetect.java) has a purpose-built escape hatch for exactly
+ * this: a "requestVPN" field trial that removes NET_CAPABILITY_NOT_VPN from that
+ * request. Enabled below via PeerConnectionFactory.InitializationOptions -
+ * without it, ICE has no mutually reachable candidate pair and goes to FAILED.
+ *
+ * With requestVPN enabled, WebRTC also (re)discovers cellular/wifi/ethernet as
+ * candidate sources again - networkIgnoreMask filters those back out so ICE only
+ * ever gathers from the Yggdrasil tun, which is the only path that could work
+ * between these two phones anyway (avoids wasted/misleading candidate pairs,
+ * e.g. if both phones happen to share a LAN during a bench test).
+ *
+ * SECOND GOTCHA (also confirmed via logcat): passing setFieldTrials() to
+ * PeerConnectionFactory.InitializationOptions alone did NOT reach the network
+ * monitor - `NetworkMonitor: Start monitoring ... fieldTrialsString:` logged empty
+ * every time. Reason: org.webrtc.NetworkMonitor.getInstance().startMonitoring(...)
+ * is lazy - it only builds its NetworkChangeDetector on the FIRST call, and the
+ * native side calls a private overload with whatever field trial string IT has
+ * (apparently not the global one we set), passing "". Fix: call the PUBLIC
+ * `NetworkMonitor.getInstance().startMonitoring(context, fieldTrials)` OURSELVES
+ * before creating the PeerConnectionFactory, so our field trial string wins the
+ * race and the later native-triggered call just reuses the already-built detector.
  *
  * Fase 4 is data-channel-only: no video track here yet (that's the plan's next
  * pass, once host-candidate-over-Yggdrasil is proven on real hardware).
@@ -37,15 +67,30 @@ class RtcClient(context: Context) {
 
     var onIceCandidate: ((IceCandidate) -> Unit)? = null
     var onIceConnectionChange: ((PeerConnection.IceConnectionState) -> Unit)? = null
+    var onIceGatheringChange: ((PeerConnection.IceGatheringState) -> Unit)? = null
     var onControlReceived: ((steer: Float, throttle: Float, seq: Int) -> Unit)? = null
     var onDataChannelOpen: (() -> Unit)? = null
 
     init {
+        // Must happen BEFORE PeerConnectionFactory.initialize() - that call's own
+        // nativeInitializeAndroidGlobals() already triggers the native network monitor's
+        // first (empty-field-trial) startMonitoring() call as a side effect, which wins
+        // the "only create the detector once" race if we call this after. See class doc's
+        // "SECOND GOTCHA". Symmetric stopMonitoring() call in close().
+        NetworkMonitor.getInstance().startMonitoring(context, "requestVPN:true/")
         PeerConnectionFactory.initialize(
-            PeerConnectionFactory.InitializationOptions.builder(context).createInitializationOptions()
+            PeerConnectionFactory.InitializationOptions.builder(context)
+                .setFieldTrials("requestVPN:true/")
+                .createInitializationOptions()
         )
         val options = PeerConnectionFactory.Options()
-        options.networkIgnoreMask = 0 // don't filter any adapter type - see class doc
+        // Ignoring everything except VPN turned out unreliable in practice (one real-
+        // hardware run produced zero local candidates at all despite the VPN network
+        // being visible). Leave nothing ignored instead: with requestVPN enabled, ICE
+        // gathers cellular/wifi/VPN candidates and just tries every pair - the
+        // non-Yggdrasil ones simply fail their connectivity check when the two phones
+        // aren't otherwise reachable, which is harmless.
+        options.networkIgnoreMask = 0
         factory = PeerConnectionFactory.builder().setOptions(options).createPeerConnectionFactory()
     }
 
@@ -66,7 +111,9 @@ class RtcClient(context: Context) {
 
             override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
             override fun onIceConnectionReceivingChange(p0: Boolean) {}
-            override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
+            override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {
+                onIceGatheringChange?.invoke(state)
+            }
             override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {}
             override fun onAddStream(p0: MediaStream?) {}
             override fun onRemoveStream(p0: MediaStream?) {}
@@ -154,6 +201,7 @@ class RtcClient(context: Context) {
         peerConnection?.close()
         peerConnection = null
         eglBase.release()
+        NetworkMonitor.getInstance().stopMonitoring() // balances the startMonitoring() call in init
     }
 
     private fun sdpObserver(

@@ -3,6 +3,7 @@ package nu.bruijn.rcvehicle.controller
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.widget.Button
 import android.widget.EditText
 import android.widget.SeekBar
@@ -52,6 +53,7 @@ class ControllerActivity : AppCompatActivity() {
         }
 
         fun log(line: String) = runOnUiThread {
+            Log.d("RCDebug", line)
             logView.append(line + "\n")
         }
 
@@ -82,6 +84,7 @@ class ControllerActivity : AppCompatActivity() {
                     }
                 }
                 rtc.onIceConnectionChange = { state -> log("ICE state: $state") }
+                rtc.onIceGatheringChange = { state -> log("ICE gathering: $state") }
                 rtc.onDataChannelOpen = { log("data channel OPEN") }
                 rtc.createPeerConnection()
                 rtc.createControlDataChannel()
