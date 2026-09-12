@@ -5,17 +5,36 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
- * Hosts the signaling server, RTC session, camera capture and servo bridge (plan
- * sections 3-6) so they keep running with the screen off. Empty shell for now -
- * wired up once SignalingServer/RtcClient/ServoBridge exist.
+ * Hosts the wifi-to-ESP32 link (EspWifiNetworkBinder + ServoBridge) so it survives
+ * screen-off/backgrounding. Signaling/RTC/camera land in a later pass; for this
+ * stage (plan section "fase 2") it's driven by VehicleActivity's debug sliders
+ * instead of a data channel.
  */
 class VehicleForegroundService : Service() {
 
+    inner class LocalBinder : Binder() {
+        val service: VehicleForegroundService get() = this@VehicleForegroundService
+    }
+
+    private val binder = LocalBinder()
+    private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private val channelId = "vehicle_service"
+
+    val servoBridge = ServoBridge()
+    private lateinit var networkBinder: EspWifiNetworkBinder
+
+    var onStatus: ((String) -> Unit)? = null
+    private var espIp: String = "192.168.4.1"
 
     override fun onCreate() {
         super.onCreate()
@@ -25,6 +44,8 @@ class VehicleForegroundService : Service() {
             )
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
+        networkBinder = EspWifiNetworkBinder(applicationContext)
+        servoBridge.onStateChange = { status -> onStatus?.invoke(status) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -37,5 +58,33 @@ class VehicleForegroundService : Service() {
         return START_STICKY
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    /** Call once the user has entered/confirmed the ESP32's IP (bench-test debug UI). */
+    fun connectToEsp(ip: String) {
+        espIp = ip
+        onStatus?.invoke("requesting wifi network…")
+        serviceScope.launch {
+            networkBinder.observe().collect { state ->
+                when (state) {
+                    is EspWifiNetworkBinder.State.Requesting ->
+                        onStatus?.invoke("requesting wifi network…")
+                    is EspWifiNetworkBinder.State.Available -> {
+                        onStatus?.invoke("wifi network acquired")
+                        servoBridge.start(state.network, espIp)
+                    }
+                    is EspWifiNetworkBinder.State.Lost -> {
+                        onStatus?.invoke("wifi network lost")
+                        servoBridge.stop()
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onBind(intent: Intent?): IBinder = binder
+
+    override fun onDestroy() {
+        servoBridge.stop()
+        serviceScope.cancel()
+        super.onDestroy()
+    }
 }

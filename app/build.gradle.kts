@@ -45,6 +45,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
-    // WebRTC + camera/data-channel work lands in a later pass (plan sections 4-5);
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // WebRTC + camera/data-channel work lands in a later pass (plan section 4);
     // not pulled in yet so this skeleton stays fast to build and verify.
 }
