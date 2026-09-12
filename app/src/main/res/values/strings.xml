@@ -3,11 +3,16 @@
     <string name="mode_picker_title">Kies modus</string>
     <string name="mode_controller">Besturing</string>
     <string name="mode_vehicle">Voertuig</string>
-    <string name="controller_placeholder">Controller-modus (nog te bouwen: joystick + video)</string>
     <string name="vehicle_debug_title">Debug: wifi-naar-ESP32 test (fase 2)</string>
     <string name="vehicle_esp_ip_hint">ESP32 IP-adres</string>
     <string name="vehicle_connect">Verbinden</string>
     <string name="vehicle_status_idle">Nog niet verbonden</string>
     <string name="vehicle_debug_steer">Stuur</string>
     <string name="vehicle_debug_throttle">Gas</string>
+    <string name="vehicle_rtc_title">Debug: WebRTC over Yggdrasil (fase 4)</string>
+    <string name="vehicle_own_address_detecting">Eigen Yggdrasil-adres: zoeken…</string>
+    <string name="vehicle_start_listening">Start luisteren op signaling-poort</string>
+    <string name="controller_rtc_title">Debug: WebRTC over Yggdrasil (fase 4)</string>
+    <string name="controller_vehicle_address_hint">Yggdrasil-adres van het voertuig</string>
+    <string name="controller_connect">Verbinden (WebRTC)</string>
 </resources>

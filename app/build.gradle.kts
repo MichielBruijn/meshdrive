@@ -46,6 +46,7 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    // WebRTC + camera/data-channel work lands in a later pass (plan section 4);
-    // not pulled in yet so this skeleton stays fast to build and verify.
+    implementation("io.getstream:stream-webrtc-android:1.3.8")
+    // Camera capture/video track land in a later pass (plan section 4's video half);
+    // fase 4 is data-channel-only, no video yet.
 }

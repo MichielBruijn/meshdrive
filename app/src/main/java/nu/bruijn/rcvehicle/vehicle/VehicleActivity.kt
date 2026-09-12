@@ -13,12 +13,25 @@ import android.widget.EditText
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import nu.bruijn.rcvehicle.R
+import nu.bruijn.rcvehicle.common.YggdrasilAddress
+import nu.bruijn.rcvehicle.rtc.RtcClient
+import nu.bruijn.rcvehicle.signaling.SignalingMessage
+import nu.bruijn.rcvehicle.signaling.SignalingServer
+import org.webrtc.IceCandidate
+import org.webrtc.SessionDescription
 
 /**
- * Debug UI for plan "fase 2": drives ServoBridge with two sliders instead of a
- * WebRTC data channel, to verify the wifi-to-ESP32 plumbing (ConnectivityManager
- * network binding, websocket, failsafe) before any RTC code exists.
+ * Debug UI: fase 2 (wifi-to-ESP32, top half) drives ServoBridge with two sliders,
+ * fase 4 (WebRTC over Yggdrasil, bottom half) listens for the controller and
+ * relays whatever it receives into the SAME ServoBridge - so with both sections
+ * connected at once this is already a real end-to-end controller-phone ->
+ * vehicle-phone -> ESP32 path, just without video yet.
  */
 class VehicleActivity : AppCompatActivity() {
 
@@ -26,6 +39,10 @@ class VehicleActivity : AppCompatActivity() {
     private var bound = false
     private val tickHandler = Handler(Looper.getMainLooper())
     private var tickRunnable: Runnable? = null
+
+    private var signalingServer: SignalingServer? = null
+    private var rtcClient: RtcClient? = null
+    private var listenJob: Job? = null
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -50,9 +67,71 @@ class VehicleActivity : AppCompatActivity() {
         val editIp = findViewById<EditText>(R.id.editEspIp)
         val seekSteer = findViewById<SeekBar>(R.id.seekSteer)
         val seekThrottle = findViewById<SeekBar>(R.id.seekThrottle)
+        val textOwnAddress = findViewById<TextView>(R.id.textOwnYggdrasilAddress)
+        val logView = findViewById<TextView>(R.id.textRtcLog)
+
+        fun log(line: String) = runOnUiThread { logView.append(line + "\n") }
 
         findViewById<Button>(R.id.buttonConnect).setOnClickListener {
             service?.connectToEsp(editIp.text.toString().trim())
+        }
+
+        lifecycleScope.launch {
+            val address = withContext(Dispatchers.IO) { YggdrasilAddress.detect() }
+            textOwnAddress.text = if (address != null) {
+                "Eigen Yggdrasil-adres: $address"
+            } else {
+                "Eigen Yggdrasil-adres: niet gevonden (Yggdrasil-app actief?)"
+            }
+        }
+
+        findViewById<Button>(R.id.buttonListen).setOnClickListener {
+            listenJob?.cancel()
+            signalingServer?.close()
+            rtcClient?.close()
+            logView.text = ""
+
+            listenJob = lifecycleScope.launch {
+                log("listening on port ${SignalingMessage.PORT}…")
+                val server = SignalingServer().also { signalingServer = it }
+                val session = try {
+                    server.acceptSession()
+                } catch (e: Exception) {
+                    log("accept failed: ${e.message}")
+                    return@launch
+                }
+                log("controller connected")
+
+                val rtc = RtcClient(applicationContext).also { rtcClient = it }
+                rtc.onIceCandidate = { candidate ->
+                    log("local ICE candidate: ${candidate.sdp}")
+                    lifecycleScope.launch {
+                        session.send(SignalingMessage.Ice(candidate.sdpMid, candidate.sdpMLineIndex, candidate.sdp))
+                    }
+                }
+                rtc.onIceConnectionChange = { state -> log("ICE state: $state") }
+                rtc.onDataChannelOpen = { log("data channel OPEN") }
+                rtc.onControlReceived = { steer, throttle, seq ->
+                    log("control #$seq: steer=$steer throttle=$throttle")
+                    service?.servoBridge?.sendControl(steer, throttle)
+                }
+                rtc.createPeerConnection()
+
+                session.messages().collect { msg ->
+                    when (msg) {
+                        is SignalingMessage.Offer -> {
+                            rtc.setRemoteDescription(SessionDescription(SessionDescription.Type.OFFER, msg.sdp))
+                            val answer = rtc.createAnswer()
+                            session.send(SignalingMessage.Answer(answer.description))
+                            log("answer sent")
+                        }
+                        is SignalingMessage.Ice -> {
+                            rtc.addIceCandidate(IceCandidate(msg.sdpMid, msg.sdpMLineIndex, msg.candidate))
+                        }
+                        else -> {}
+                    }
+                }
+            }
         }
 
         val listener = object : SeekBar.OnSeekBarChangeListener {
@@ -89,6 +168,9 @@ class VehicleActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
+        listenJob?.cancel()
+        signalingServer?.close()
+        rtcClient?.close()
         if (bound) {
             unbindService(connection)
             bound = false
