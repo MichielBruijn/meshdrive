@@ -31,6 +31,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import nu.bruijn.rcvehicle.R
+import nu.bruijn.rcvehicle.audio.AudioPacket
+import nu.bruijn.rcvehicle.audio.AudioSender
 import nu.bruijn.rcvehicle.common.InternetNetworkBinder
 import nu.bruijn.rcvehicle.common.QrCode
 import nu.bruijn.rcvehicle.common.YggdrasilAddress
@@ -68,6 +70,7 @@ class VehicleActivity : AppCompatActivity() {
     private var tickRunnable: Runnable? = null
     private val controlLink = ControlLink()
     private val videoSender = VideoSender(this)
+    private val audioSender = AudioSender()
     private var videoStarted = false
     private var lastRemoteControlAtMs = 0L
 
@@ -153,10 +156,10 @@ class VehicleActivity : AppCompatActivity() {
             logView.append(line + "\n")
         }
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1)
+        val neededPermissions = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+            .filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+        if (neededPermissions.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, neededPermissions.toTypedArray(), 1)
         }
 
         val buttonConnectUsb = findViewById<Button>(R.id.buttonConnectUsb)
@@ -487,6 +490,15 @@ class VehicleActivity : AppCompatActivity() {
         // supported by HAL" - not just lower quality, no video at all without this),
         // so this is always "the highest that actually works", not a hardcoded guess.
         videoSender.start(controllerAddress.hostAddress!!, VideoPacket.PORT, VideoQuality.HIGH)
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            audioSender.onError = { msg -> log("audio: $msg") }
+            audioSender.start(controllerAddress.hostAddress!!, AudioPacket.PORT)
+        } else {
+            log("audio: RECORD_AUDIO permission not granted, skipping")
+        }
     }
 
     override fun onResume() {
@@ -499,6 +511,7 @@ class VehicleActivity : AppCompatActivity() {
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
         controlLink.close()
         videoSender.stop()
+        audioSender.stop()
         if (bound) {
             unbindService(connection)
             bound = false

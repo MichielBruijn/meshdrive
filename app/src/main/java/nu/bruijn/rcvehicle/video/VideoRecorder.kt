@@ -2,7 +2,6 @@ package nu.bruijn.rcvehicle.video
 
 import android.media.MediaCodec
 import android.media.MediaFormat
-import android.media.MediaMuxer
 import java.nio.ByteBuffer
 
 /**
@@ -18,9 +17,15 @@ import java.nio.ByteBuffer
  * keyframe) become the track's codec-specific data instead of being written as
  * samples, since addTrack()/start() must happen before the first writeSampleData()
  * call - recording effectively starts at the first keyframe seen after start().
+ *
+ * All actual MediaMuxer access goes through the shared [MuxerSession] (see its
+ * doc) rather than a MediaMuxer this class owns directly - a plain MediaMuxer
+ * here, called from this class's background thread while the Record button's
+ * stop path called into it from the UI thread, was the root cause of a real,
+ * confirmed-on-hardware corrupted-recording bug.
  */
 class VideoRecorder {
-    private var muxer: MediaMuxer? = null
+    private var session: MuxerSession? = null
     private var videoTrackIndex = -1
     private var started = false
     private var startTimeUs = -1L
@@ -29,13 +34,8 @@ class VideoRecorder {
 
     var onError: ((String) -> Unit)? = null
 
-    /** Takes an already-constructed MediaMuxer rather than a path - lets the caller
-     * decide how the output is actually created (a plain file, or a MediaStore
-     * entry's FileDescriptor so a recording shows up in the gallery like any other
-     * video - see ControllerDriveActivity's setUpRecordButton()), without this class
-     * needing to know anything about scoped storage/permissions. */
-    fun start(muxer: MediaMuxer) {
-        this.muxer = muxer
+    fun start(session: MuxerSession) {
+        this.session = session
         videoTrackIndex = -1
         started = false
         startTimeUs = -1L
@@ -46,7 +46,7 @@ class VideoRecorder {
     /** [data] is one complete, reassembled access unit - the same thing
      * VideoReceiver.feedDecoder() gets, called from the same place. */
     fun feed(data: ByteArray, width: Int, height: Int) {
-        val m = muxer ?: return
+        val s = session ?: return
         var isKeyFrame = false
         val samples = mutableListOf<ByteArray>()
 
@@ -70,13 +70,7 @@ class VideoRecorder {
                 setByteBuffer("csd-0", ByteBuffer.wrap(withStartCode(sps)))
                 setByteBuffer("csd-1", ByteBuffer.wrap(withStartCode(pps)))
             }
-            try {
-                videoTrackIndex = m.addTrack(format)
-                m.start()
-            } catch (e: Exception) {
-                onError?.invoke("could not start recording: ${e.message}")
-                return
-            }
+            videoTrackIndex = s.addVideoTrack(format)
             started = true
             startTimeUs = System.nanoTime() / 1000
         }
@@ -91,26 +85,15 @@ class VideoRecorder {
             val info = MediaCodec.BufferInfo().apply {
                 set(0, buffer.remaining(), presentationTimeUs, if (isKeyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
             }
-            try {
-                m.writeSampleData(videoTrackIndex, buffer, info)
-            } catch (e: Exception) {
-                onError?.invoke("write failed: ${e.message}")
-            }
+            s.writeSample(videoTrackIndex, buffer, info)
         }
     }
 
-    /** True if anything was actually written (a keyframe never arrived otherwise). */
+    /** True if this track ever got as far as being added (MuxerSession.stop() reports
+     * whether the muxer as a whole actually wrote anything). */
     fun stop(): Boolean {
         val wasStarted = started
-        try {
-            if (started) muxer?.stop()
-        } catch (_: Exception) {
-        }
-        try {
-            muxer?.release()
-        } catch (_: Exception) {
-        }
-        muxer = null
+        session = null
         started = false
         return wasStarted
     }

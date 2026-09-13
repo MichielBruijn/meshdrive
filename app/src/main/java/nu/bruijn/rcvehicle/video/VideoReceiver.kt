@@ -57,10 +57,10 @@ class VideoReceiver {
     private var videoWidth = 640
     private var videoHeight = 480
 
-    fun startRecording(muxer: android.media.MediaMuxer, onError: (String) -> Unit) {
+    fun startRecording(session: MuxerSession, onError: (String) -> Unit) {
         val r = VideoRecorder()
         r.onError = onError
-        r.start(muxer)
+        r.start(session)
         recorder = r
     }
 
@@ -122,7 +122,14 @@ class VideoReceiver {
                 offset += part.size
             }
             feedDecoder(assembled)
-            recorder?.feed(assembled, videoWidth, videoHeight)
+            try {
+                recorder?.feed(assembled, videoWidth, videoHeight)
+            } catch (e: Exception) {
+                // Never let a recording-side problem take down the receive loop that
+                // live playback depends on - see MuxerSession's doc for the bug this
+                // guards against.
+                onError?.invoke("record: ${e.message}")
+            }
         }
 
         // Drop stale incomplete frames so a lost fragment can't leak memory forever.

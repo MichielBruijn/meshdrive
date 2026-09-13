@@ -24,8 +24,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import nu.bruijn.rcvehicle.R
+import nu.bruijn.rcvehicle.audio.AudioPacket
+import nu.bruijn.rcvehicle.audio.AudioReceiver
 import nu.bruijn.rcvehicle.control.ControlLink
 import nu.bruijn.rcvehicle.mode.ModePrefs
+import nu.bruijn.rcvehicle.video.MuxerSession
 import nu.bruijn.rcvehicle.video.VideoPacket
 import nu.bruijn.rcvehicle.video.VideoQuality
 import nu.bruijn.rcvehicle.video.VideoReceiver
@@ -73,6 +76,7 @@ class ControllerDriveActivity : AppCompatActivity() {
 
     private val controlLink = ControlLink()
     private val videoReceiver = VideoReceiver()
+    private val audioReceiver = AudioReceiver()
     private val tickHandler = Handler(Looper.getMainLooper())
     private var tickRunnable: Runnable? = null
     private var seq = 0
@@ -162,6 +166,16 @@ class ControllerDriveActivity : AppCompatActivity() {
         }
 
         videoReceiver.onError = { msg -> log("video: $msg") }
+        audioReceiver.onError = { msg -> log("audio: $msg") }
+        // Doesn't need a Surface like video does, so it can just run for the whole
+        // screen's lifetime instead of being tied to onSurfaceTextureAvailable/
+        // Destroyed below.
+        try {
+            audioReceiver.start(AudioPacket.PORT)
+            log("listening for audio on port ${AudioPacket.PORT}")
+        } catch (e: Exception) {
+            log("audio listen failed: ${e::class.simpleName}: ${e.message}")
+        }
         videoReceiver.onRotationChanged = { rotation ->
             runOnUiThread {
                 currentRotation = rotation
@@ -326,10 +340,11 @@ class ControllerDriveActivity : AppCompatActivity() {
     private var recordingDisplayPath: String? = null
     private var recordingUri: android.net.Uri? = null
     private var recordingPfd: android.os.ParcelFileDescriptor? = null
+    private var muxerSession: MuxerSession? = null
 
     /** Holds everything one recording attempt needs, whichever way it was created. */
     private class RecordingTarget(
-        val muxer: android.media.MediaMuxer,
+        val session: MuxerSession,
         val uri: android.net.Uri?,
         val pfd: android.os.ParcelFileDescriptor?,
         val displayPath: String,
@@ -369,20 +384,21 @@ class ControllerDriveActivity : AppCompatActivity() {
                 return null
             }
             val muxer = android.media.MediaMuxer(pfd.fileDescriptor, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            return RecordingTarget(muxer, uri, pfd, "Movies/MeshDrive/$fileName")
+            return RecordingTarget(MuxerSession(muxer), uri, pfd, "Movies/MeshDrive/$fileName")
         }
 
         val dir = getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES) ?: return null
         dir.mkdirs()
         val file = java.io.File(dir, fileName)
         val muxer = android.media.MediaMuxer(file.absolutePath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        return RecordingTarget(muxer, null, null, file.absolutePath)
+        return RecordingTarget(MuxerSession(muxer), null, null, file.absolutePath)
     }
 
     /**
-     * Records the incoming video stream to an .mp4 (VideoReceiver.startRecording()/
-     * VideoRecorder - remuxes the same H.264 access units already being decoded, no
-     * re-encoding) - see createRecordingTarget() for where the file actually goes.
+     * Records the incoming video (and, if it's actually flowing - see MuxerSession's
+     * doc - audio) stream to an .mp4. VideoRecorder/AudioRecorderTrack remux the same
+     * access units already being decoded, no re-encoding; see createRecordingTarget()
+     * for where the file actually goes.
      */
     private fun setUpRecordButton(log: (String) -> Unit) {
         val buttonRecord = findViewById<Button>(R.id.buttonRecord)
@@ -393,15 +409,21 @@ class ControllerDriveActivity : AppCompatActivity() {
                     log("record: could not create output file")
                     return@setOnClickListener
                 }
-                videoReceiver.startRecording(target.muxer) { msg -> log("record: $msg") }
+                target.session.expectAudio = audioReceiver.hasReceivedAudio
+                muxerSession = target.session
+                videoReceiver.startRecording(target.session) { msg -> log("record: $msg") }
+                audioReceiver.startRecording(target.session)
                 recordingUri = target.uri
                 recordingPfd = target.pfd
                 recordingDisplayPath = target.displayPath
                 isRecording = true
                 buttonRecord.text = getString(R.string.controller_recording)
-                log("recording to ${target.displayPath}")
+                log("recording to ${target.displayPath}${if (target.session.expectAudio) " (with audio)" else ""}")
             } else {
-                val wroteAnything = videoReceiver.stopRecording()
+                videoReceiver.stopRecording()
+                audioReceiver.stopRecording()
+                val wroteAnything = muxerSession?.stop() ?: false
+                muxerSession = null
                 try {
                     recordingPfd?.close()
                 } catch (_: Exception) {
@@ -495,11 +517,14 @@ class ControllerDriveActivity : AppCompatActivity() {
     override fun onDestroy() {
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
         controlLink.close()
-        // videoReceiver.stop() (which stops the recorder, flushing the muxer's final
-        // moov atom) must finish BEFORE the FileDescriptor it was writing through
-        // gets closed below, or the file corrupts - order matters here.
         videoReceiver.stop()
+        audioReceiver.stop()
+        // muxerSession.stop() (flushing the muxer's final moov atom) must finish
+        // BEFORE the FileDescriptor it was writing through gets closed below, or the
+        // file corrupts - order matters here.
         if (isRecording) {
+            muxerSession?.stop()
+            muxerSession = null
             try {
                 recordingPfd?.close()
             } catch (_: Exception) {
