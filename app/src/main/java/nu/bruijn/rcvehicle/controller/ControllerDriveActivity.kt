@@ -100,7 +100,7 @@ class ControllerDriveActivity : AppCompatActivity() {
     // at (VideoQuality's ordinal); autoQuality toggles the FPS-driven step-down/
     // step-up loop in videoReceiver.onFps below. Manual button taps turn autoQuality
     // off, so a deliberate low-bandwidth choice never gets silently overridden.
-    private var currentQualityIndex = VideoQuality.MEDIUM.ordinal
+    private var currentQualityIndex = VideoQuality.HIGH.ordinal
     private var autoQuality = false
     private var lowFpsStreak = 0
     private var healthyFpsStreak = 0
@@ -129,13 +129,15 @@ class ControllerDriveActivity : AppCompatActivity() {
         val textDebugOverlay = findViewById<TextView>(R.id.textDebugOverlay)
         val textConnectionWarning = findViewById<TextView>(R.id.textConnectionWarning)
 
-        // Verbose log + FPS/latency numbers are diagnostic detail, hidden unless "Debug
-        // mode" is on (MainActivity) - textConnectionWarning below stays visible
-        // regardless, that one's a safety signal, not a diagnostic.
+        // Verbose log + FPS/latency numbers + the resolution picker are diagnostic/rarely-
+        // needed, hidden unless "Debug mode" is on (MainActivity) - textConnectionWarning
+        // below stays visible regardless, that one's a safety signal, not a diagnostic.
+        val qualitySection = findViewById<View>(R.id.qualitySection)
         lifecycleScope.launch {
             val debugEnabled = ModePrefs(applicationContext).debugEnabled.first()
             logView.visibility = if (debugEnabled) View.VISIBLE else View.GONE
             textDebugOverlay.visibility = if (debugEnabled) View.VISIBLE else View.GONE
+            qualitySection.visibility = if (debugEnabled) View.VISIBLE else View.GONE
         }
 
         fun log(line: String) = runOnUiThread {
@@ -241,8 +243,15 @@ class ControllerDriveActivity : AppCompatActivity() {
             }
         }
 
-        findViewById<CheckBox>(R.id.checkSteerLimit).setOnCheckedChangeListener { _, checked ->
-            controlLink.sendSteerLimit(checked)
+        val activeTint = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#2E7D32"))
+
+        val buttonSteerLimit = findViewById<Button>(R.id.buttonSteerLimit)
+        val defaultSteerLimitTint = buttonSteerLimit.backgroundTintList
+        var steerLimitEnabled = false
+        buttonSteerLimit.setOnClickListener {
+            steerLimitEnabled = !steerLimitEnabled
+            controlLink.sendSteerLimit(steerLimitEnabled)
+            buttonSteerLimit.backgroundTintList = if (steerLimitEnabled) activeTint else defaultSteerLimitTint
         }
 
         val checkAutoQuality = findViewById<CheckBox>(R.id.checkAutoQuality)
@@ -260,8 +269,14 @@ class ControllerDriveActivity : AppCompatActivity() {
             setQuality(VideoQuality.HIGH.ordinal)
         }
 
-        findViewById<CheckBox>(R.id.checkRearView).setOnCheckedChangeListener { _, checked ->
-            controlLink.sendCamera(checked)
+        val buttonRearView = findViewById<Button>(R.id.buttonRearView)
+        val defaultRearViewTint = buttonRearView.backgroundTintList
+        var rearViewActive = false
+        buttonRearView.setOnClickListener {
+            rearViewActive = !rearViewActive
+            controlLink.sendCamera(rearViewActive)
+            buttonRearView.text = getString(if (rearViewActive) R.string.controller_front_view else R.string.controller_rear_view)
+            buttonRearView.backgroundTintList = if (rearViewActive) activeTint else defaultRearViewTint
         }
 
         setUpRecordButton(::log)

@@ -48,72 +48,73 @@
         android:background="#AA000000"
         android:padding="8dp" />
 
+    <!-- Switches which of the vehicle phone's two cameras streams - see
+         VideoSender.switchCamera(). Not a picture-in-picture mirror: that needs
+         concurrent dual-camera capture, confirmed on real hardware (2026-09-13) as
+         unsupported here - CameraManager.concurrentCameraIds came back empty on the
+         Fairphone 5. This swaps the single stream instead, so the main view itself
+         becomes the rear view while active - label/tint (ControllerDriveActivity)
+         show which one is currently live. -->
+    <Button
+        android:id="@+id/buttonRearView"
+        style="?android:attr/buttonStyleSmall"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="8dp"
+        android:text="@string/controller_rear_view" />
+
+    <Button
+        android:id="@+id/buttonSteerLimit"
+        style="?android:attr/buttonStyleSmall"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_margin="8dp"
+        android:text="@string/controller_steer_limit" />
+
+    <!-- Video quality: manual Low/Med/High picks, or Auto to let the app step down/up
+         from decoded FPS - see ControllerDriveActivity's auto-quality loop. Manual
+         buttons turn Auto off. Debug-only: starts at HIGH and rarely needs touching
+         day to day, this is for deliberately trading quality for bandwidth. -->
     <LinearLayout
+        android:id="@+id/qualitySection"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|center_horizontal"
         android:layout_marginTop="12dp"
-        android:orientation="vertical"
-        android:gravity="center_horizontal">
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/buttonQualityLow"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/controller_quality_low" />
+
+        <Button
+            android:id="@+id/buttonQualityMedium"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/controller_quality_medium" />
+
+        <Button
+            android:id="@+id/buttonQualityHigh"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/controller_quality_high" />
 
         <CheckBox
-            android:id="@+id/checkSteerLimit"
+            android:id="@+id/checkAutoQuality"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
             android:textColor="@android:color/white"
-            android:text="@string/controller_steer_limit" />
-
-        <!-- Switches which of the vehicle phone's two cameras streams - see
-             VideoSender.switchCamera(). Not a picture-in-picture mirror: that needs
-             concurrent dual-camera capture, confirmed on real hardware (2026-09-13)
-             as unsupported here - CameraManager.concurrentCameraIds came back empty
-             on the Fairphone 5. This swaps the single stream instead, so the main
-             view itself becomes the rear view while checked. -->
-        <CheckBox
-            android:id="@+id/checkRearView"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textColor="@android:color/white"
-            android:text="@string/controller_rear_view" />
-
-        <!-- Video quality: manual Low/Med/High picks, or Auto to let the app step
-             down/up from decoded FPS - see ControllerDriveActivity's auto-quality
-             loop. Manual buttons turn Auto off. -->
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical">
-
-            <Button
-                android:id="@+id/buttonQualityLow"
-                style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/controller_quality_low" />
-
-            <Button
-                android:id="@+id/buttonQualityMedium"
-                style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/controller_quality_medium" />
-
-            <Button
-                android:id="@+id/buttonQualityHigh"
-                style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/controller_quality_high" />
-
-            <CheckBox
-                android:id="@+id/checkAutoQuality"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:textColor="@android:color/white"
-                android:text="@string/controller_quality_auto" />
-        </LinearLayout>
+            android:text="@string/controller_quality_auto" />
     </LinearLayout>
 
     <!-- Debug-only (log + FPS/latency): bottom instead of top - a top overlay kept

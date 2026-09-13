@@ -480,7 +480,10 @@ class VehicleActivity : AppCompatActivity() {
             return
         }
         log("starting video to ${controllerAddress.hostAddress}")
-        videoSender.start(controllerAddress.hostAddress!!, VideoPacket.PORT)
+        // Starts at HIGH, matching ControllerDriveActivity's own default - the
+        // auto-quality loop (or a manual pick, both debug-only now) can still step it
+        // down/up from there once real FPS numbers come in.
+        videoSender.start(controllerAddress.hostAddress!!, VideoPacket.PORT, VideoQuality.HIGH)
     }
 
     override fun onResume() {
