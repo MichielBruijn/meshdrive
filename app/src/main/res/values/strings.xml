@@ -38,6 +38,7 @@
     <string name="controller_quality_medium">Med</string>
     <string name="controller_quality_high">High</string>
     <string name="controller_quality_auto">Auto</string>
+    <string name="controller_telemetry">GPS/speed</string>
     <string name="vehicle_qr_content_description">QR code with own Yggdrasil address</string>
     <string name="vehicle_open_yggdrasil">Open Yggdrasil</string>
 </resources>

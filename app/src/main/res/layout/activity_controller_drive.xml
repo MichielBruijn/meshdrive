@@ -130,6 +130,18 @@
             android:layout_marginStart="8dp"
             android:textColor="@android:color/white"
             android:text="@string/controller_quality_auto" />
+
+        <!-- Tells the vehicle to start/stop GPS (ControlFrame.TelemetryEnable) and
+             send its speed/position back - off by default so the vehicle isn't
+             burning battery on location fixes nobody's looking at. Shown in the
+             debug overlay (textDebugOverlay) once data arrives. -->
+        <CheckBox
+            android:id="@+id/checkTelemetry"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:textColor="@android:color/white"
+            android:text="@string/controller_telemetry" />
     </LinearLayout>
 
     <!-- Debug-only (log + FPS/latency): bottom instead of top - a top overlay kept

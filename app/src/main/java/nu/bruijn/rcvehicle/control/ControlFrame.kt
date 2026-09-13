@@ -17,8 +17,11 @@ object ControlFrame {
     private const val TYPE_PONG: Byte = 0x04
     private const val TYPE_QUALITY: Byte = 0x05
     private const val TYPE_CAMERA: Byte = 0x06
+    private const val TYPE_TELEMETRY_ENABLE: Byte = 0x07
+    private const val TYPE_TELEMETRY: Byte = 0x08
     private const val CONTROL_SIZE = 9
     private const val TIMESTAMP_SIZE = 9 // type + long
+    private const val TELEMETRY_SIZE = 1 + 1 + 4 + 8 + 8 // type, hasFix, speed float, lat/lon doubles
 
     fun encodeControl(steer: Float, throttle: Float, seq: Int): ByteArray {
         val bb = ByteBuffer.allocate(CONTROL_SIZE).order(ByteOrder.LITTLE_ENDIAN)
@@ -44,6 +47,22 @@ object ControlFrame {
     /** Controller -> vehicle: switch which physical camera streams video - "rear view" toggle. */
     fun encodeCamera(useFront: Boolean): ByteArray = byteArrayOf(TYPE_CAMERA, if (useFront) 1 else 0)
 
+    /** Controller -> vehicle: start/stop GPS and sending it back - debug-only overlay,
+     * so the vehicle doesn't burn battery on location fixes nobody's looking at. */
+    fun encodeTelemetryEnable(enabled: Boolean): ByteArray = byteArrayOf(TYPE_TELEMETRY_ENABLE, if (enabled) 1 else 0)
+
+    /** Vehicle -> controller: current GPS fix, for the controller's debug speed/GPS
+     * overlay. [hasFix] distinguishes "no GPS fix yet" from "stationary at 0 km/h". */
+    fun encodeTelemetry(hasFix: Boolean, speedKmh: Float, lat: Double, lon: Double): ByteArray {
+        val bb = ByteBuffer.allocate(TELEMETRY_SIZE).order(ByteOrder.LITTLE_ENDIAN)
+        bb.put(TYPE_TELEMETRY)
+        bb.put(if (hasFix) 1 else 0)
+        bb.putFloat(speedKmh)
+        bb.putDouble(lat)
+        bb.putDouble(lon)
+        return bb.array()
+    }
+
     private fun encodeTimestamp(type: Byte, value: Long): ByteArray {
         val bb = ByteBuffer.allocate(TIMESTAMP_SIZE).order(ByteOrder.LITTLE_ENDIAN)
         bb.put(type)
@@ -58,6 +77,8 @@ object ControlFrame {
         data class Pong(val sentAtMs: Long) : Decoded()
         data class Quality(val presetIndex: Int) : Decoded()
         data class Camera(val useFront: Boolean) : Decoded()
+        data class TelemetryEnable(val enabled: Boolean) : Decoded()
+        data class Telemetry(val hasFix: Boolean, val speedKmh: Float, val lat: Double, val lon: Double) : Decoded()
     }
 
     fun decode(bytes: ByteArray, length: Int): Decoded? {
@@ -91,6 +112,20 @@ object ControlFrame {
             TYPE_CAMERA -> {
                 if (length != 2) return null
                 Decoded.Camera(bytes[1] == 1.toByte())
+            }
+            TYPE_TELEMETRY_ENABLE -> {
+                if (length != 2) return null
+                Decoded.TelemetryEnable(bytes[1] == 1.toByte())
+            }
+            TYPE_TELEMETRY -> {
+                if (length != TELEMETRY_SIZE) return null
+                val bb = ByteBuffer.wrap(bytes, 0, length).order(ByteOrder.LITTLE_ENDIAN)
+                bb.position(1)
+                val hasFix = bb.get() == 1.toByte()
+                val speedKmh = bb.float
+                val lat = bb.double
+                val lon = bb.double
+                Decoded.Telemetry(hasFix, speedKmh, lat, lon)
             }
             else -> null
         }

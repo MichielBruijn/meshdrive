@@ -90,13 +90,40 @@ class ControlLink {
         sendBytes(ControlFrame.encodeCamera(useFront))
     }
 
+    /** Controller side: start/stop the vehicle's GPS/speed telemetry (debug overlay). */
+    fun sendTelemetryEnable(enabled: Boolean) {
+        sendBytes(ControlFrame.encodeTelemetryEnable(enabled))
+    }
+
+    // Vehicle side: who to send Telemetry frames to - learned from whichever address
+    // listen() last received a real packet from, same as maybeStartVideo()'s address
+    // (VehicleActivity) - kept here too since sendTelemetry() can fire independently
+    // of any particular incoming packet (on its own GPS-update cadence).
+    @Volatile private var lastSenderAddress: InetAddress? = null
+    @Volatile private var lastSenderPort: Int = -1
+
+    /** Vehicle side: send the current GPS fix to whichever controller last talked to
+     * this socket. No-op before that's known (listen() hasn't received anything yet). */
+    fun sendTelemetry(hasFix: Boolean, speedKmh: Float, lat: Double, lon: Double) {
+        val sock = socket ?: return
+        val addr = lastSenderAddress ?: return
+        val port = lastSenderPort
+        val data = ControlFrame.encodeTelemetry(hasFix, speedKmh, lat, lon)
+        scope.launch {
+            try {
+                sock.send(DatagramPacket(data, data.size, addr, port))
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     /**
      * Controller side: periodically pings the vehicle over the same connected socket
      * used by send(), and reports round-trip time (ms) via onRtt as replies come back -
      * for the FPS/latency debug overlay. Must be called after connect(). The vehicle
      * side needs no matching call: listen() below replies to any Ping automatically.
      */
-    fun startPing(intervalMs: Long = 1000, onRtt: (Long) -> Unit) {
+    fun startPing(intervalMs: Long = 1000, onRtt: (Long) -> Unit, onTelemetry: ((ControlFrame.Decoded.Telemetry) -> Unit)? = null) {
         val sock = socket ?: return
         pingJob = scope.launch {
             while (isActive) {
@@ -110,9 +137,10 @@ class ControlLink {
             while (isActive) {
                 try {
                     sock.receive(packet)
-                    val decoded = ControlFrame.decode(packet.data, packet.length)
-                    if (decoded is ControlFrame.Decoded.Pong) {
-                        onRtt(SystemClock.elapsedRealtime() - decoded.sentAtMs)
+                    when (val decoded = ControlFrame.decode(packet.data, packet.length)) {
+                        is ControlFrame.Decoded.Pong -> onRtt(SystemClock.elapsedRealtime() - decoded.sentAtMs)
+                        is ControlFrame.Decoded.Telemetry -> onTelemetry?.invoke(decoded)
+                        else -> {}
                     }
                 } catch (_: Exception) {
                     if (!isActive) break
@@ -147,6 +175,8 @@ class ControlLink {
             while (isActive) {
                 try {
                     sock.receive(packet)
+                    lastSenderAddress = packet.address
+                    lastSenderPort = packet.port
                     val decoded = ControlFrame.decode(packet.data, packet.length) ?: continue
                     if (decoded is ControlFrame.Decoded.Ping) {
                         // Latency probe reply - handled here rather than surfaced to

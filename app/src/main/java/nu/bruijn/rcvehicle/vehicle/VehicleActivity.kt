@@ -6,6 +6,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -73,6 +76,39 @@ class VehicleActivity : AppCompatActivity() {
     private val audioSender = AudioSender()
     private var videoStarted = false
     private var lastRemoteControlAtMs = 0L
+
+    // GPS/speed overlay (controller's debug checkbox, ControlFrame.TelemetryEnable) -
+    // only active while the controller actually wants it, so this phone isn't
+    // burning battery on location fixes nobody's looking at.
+    private var locationManager: LocationManager? = null
+    private var locationListener: LocationListener? = null
+
+    private fun setTelemetryEnabled(enabled: Boolean) {
+        val manager = locationManager ?: (getSystemService(Context.LOCATION_SERVICE) as LocationManager).also { locationManager = it }
+        locationListener?.let { manager.removeUpdates(it) }
+        locationListener = null
+        if (!enabled) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        val listener = LocationListener { location: Location ->
+            // location.speed is m/s and only meaningful once the provider actually
+            // has a fix with a real velocity estimate (GPS does once moving) - a
+            // stale/first fix can report 0 even while moving, but that just shows
+            // as "0 km/h" for a moment rather than anything misleading.
+            controlLink.sendTelemetry(true, location.speed * 3.6f, location.latitude, location.longitude)
+        }
+        locationListener = listener
+        try {
+            manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, listener, Looper.getMainLooper())
+        } catch (_: Exception) {
+            // No GPS provider on this device/emulator - nothing to fall back to
+            // for a moving-vehicle speed reading, network location is far too
+            // coarse/slow for that.
+        }
+    }
 
     // Set once onServiceConnected below has a service to attach it to - see setUsbButtonConnected() in onCreate.
     private var onUsbConnectedChanged: ((Boolean) -> Unit)? = null
@@ -162,7 +198,7 @@ class VehicleActivity : AppCompatActivity() {
             logView.append(line + "\n")
         }
 
-        val neededPermissions = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        val neededPermissions = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION)
             .filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (neededPermissions.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, neededPermissions.toTypedArray(), 1)
@@ -285,6 +321,13 @@ class VehicleActivity : AppCompatActivity() {
                             is ControlFrame.Decoded.Camera -> {
                                 log("camera: ${if (decoded.useFront) "front (rear view)" else "back"}")
                                 videoSender.switchCamera(decoded.useFront)
+                            }
+                            is ControlFrame.Decoded.TelemetryEnable -> {
+                                log("telemetry: ${decoded.enabled}")
+                                setTelemetryEnabled(decoded.enabled)
+                            }
+                            is ControlFrame.Decoded.Telemetry -> {
+                                // Vehicle -> controller only, never sent to the vehicle.
                             }
                             is ControlFrame.Decoded.Ping, is ControlFrame.Decoded.Pong -> {
                                 // Handled transparently inside ControlLink.listen() - never reaches here.
@@ -518,6 +561,7 @@ class VehicleActivity : AppCompatActivity() {
         controlLink.close()
         videoSender.stop()
         audioSender.stop()
+        locationListener?.let { locationManager?.removeUpdates(it) }
         if (bound) {
             unbindService(connection)
             bound = false

@@ -26,6 +26,7 @@ import kotlinx.coroutines.launch
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.audio.AudioPacket
 import nu.bruijn.rcvehicle.audio.AudioReceiver
+import nu.bruijn.rcvehicle.control.ControlFrame
 import nu.bruijn.rcvehicle.control.ControlLink
 import nu.bruijn.rcvehicle.mode.ModePrefs
 import nu.bruijn.rcvehicle.video.MuxerSession
@@ -91,6 +92,8 @@ class ControllerDriveActivity : AppCompatActivity() {
     // Debug overlay state.
     private var lastFps = -1f
     private var lastLatencyMs = -1L
+    private var telemetryEnabled = false
+    private var lastTelemetry: ControlFrame.Decoded.Telemetry? = null
 
     // Connectivity liveness (always visible, not debug - see textConnectionWarning's doc):
     // lastPongAtMs is 0 until the very first reply, so "never connected" and "was
@@ -164,7 +167,16 @@ class ControllerDriveActivity : AppCompatActivity() {
         fun updateDebugOverlay() {
             val fpsText = if (lastFps >= 0) String.format("%.0f", lastFps) else "--"
             val latencyText = if (lastLatencyMs >= 0) lastLatencyMs.toString() else "--"
-            textDebugOverlay.text = "FPS: $fpsText | Latency: $latencyText ms"
+            var text = "FPS: $fpsText | Latency: $latencyText ms"
+            if (telemetryEnabled) {
+                val t = lastTelemetry
+                text += if (t == null || !t.hasFix) {
+                    "\nGPS: no fix"
+                } else {
+                    "\n${String.format("%.1f", t.speedKmh)} km/h | ${String.format("%.5f", t.lat)}, ${String.format("%.5f", t.lon)}"
+                }
+            }
+            textDebugOverlay.text = text
         }
 
         fun setQuality(index: Int) {
@@ -242,13 +254,21 @@ class ControllerDriveActivity : AppCompatActivity() {
                 try {
                     controlLink.connect(address, ControlLink.PORT)
                     log("UDP control link connected to $address:${ControlLink.PORT}")
-                    controlLink.startPing { rtt ->
-                        runOnUiThread {
-                            lastLatencyMs = rtt
-                            lastPongAtMs = System.currentTimeMillis()
-                            updateDebugOverlay()
-                        }
-                    }
+                    controlLink.startPing(
+                        onRtt = { rtt ->
+                            runOnUiThread {
+                                lastLatencyMs = rtt
+                                lastPongAtMs = System.currentTimeMillis()
+                                updateDebugOverlay()
+                            }
+                        },
+                        onTelemetry = { telemetry ->
+                            runOnUiThread {
+                                lastTelemetry = telemetry
+                                updateDebugOverlay()
+                            }
+                        },
+                    )
                 } catch (e: Exception) {
                     log("connect failed: ${e::class.simpleName}: ${e.message}")
                 }
@@ -279,6 +299,13 @@ class ControllerDriveActivity : AppCompatActivity() {
         findViewById<Button>(R.id.buttonQualityHigh).setOnClickListener {
             checkAutoQuality.isChecked = false
             setQuality(VideoQuality.HIGH.ordinal)
+        }
+
+        findViewById<CheckBox>(R.id.checkTelemetry).setOnCheckedChangeListener { _, checked ->
+            telemetryEnabled = checked
+            controlLink.sendTelemetryEnable(checked)
+            if (!checked) lastTelemetry = null
+            updateDebugOverlay()
         }
 
         val buttonRearView = findViewById<Button>(R.id.buttonRearView)
