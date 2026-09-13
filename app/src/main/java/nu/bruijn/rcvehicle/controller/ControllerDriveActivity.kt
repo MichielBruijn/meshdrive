@@ -109,6 +109,18 @@ class ControllerDriveActivity : AppCompatActivity() {
     private var lowFpsStreak = 0
     private var healthyFpsStreak = 0
 
+    // Promoted to fields (rather than onCreate-local vals) so onPause()/onResume()
+    // can restart video/audio and log to the same views - see their doc for why
+    // that's needed (screen lock doesn't reliably re-fire onSurfaceTextureAvailable).
+    private lateinit var logView: TextView
+    private lateinit var textureVideoView: TextureView
+    private lateinit var videoContainerView: FrameLayout
+
+    private fun log(line: String) = runOnUiThread {
+        Log.d("RCDebug", line)
+        logView.append(line + "\n")
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -127,9 +139,11 @@ class ControllerDriveActivity : AppCompatActivity() {
         }
 
         val address = intent.getStringExtra(EXTRA_VEHICLE_ADDRESS)
-        val logView = findViewById<TextView>(R.id.textRtcLog)
-        val videoContainer = findViewById<FrameLayout>(R.id.videoContainer)
-        val textureVideo = findViewById<TextureView>(R.id.textureVideo)
+        logView = findViewById(R.id.textRtcLog)
+        videoContainerView = findViewById(R.id.videoContainer)
+        textureVideoView = findViewById(R.id.textureVideo)
+        val videoContainer = videoContainerView
+        val textureVideo = textureVideoView
         val textDebugOverlay = findViewById<TextView>(R.id.textDebugOverlay)
         val textConnectionWarning = findViewById<TextView>(R.id.textConnectionWarning)
 
@@ -147,11 +161,6 @@ class ControllerDriveActivity : AppCompatActivity() {
             buttonSteerLimitView.visibility = if (debugEnabled) View.VISIBLE else View.GONE
         }
 
-        fun log(line: String) = runOnUiThread {
-            Log.d("RCDebug", line)
-            logView.append(line + "\n")
-        }
-
         fun updateDebugOverlay() {
             val fpsText = if (lastFps >= 0) String.format("%.0f", lastFps) else "--"
             val latencyText = if (lastLatencyMs >= 0) lastLatencyMs.toString() else "--"
@@ -167,15 +176,6 @@ class ControllerDriveActivity : AppCompatActivity() {
 
         videoReceiver.onError = { msg -> log("video: $msg") }
         audioReceiver.onError = { msg -> log("audio: $msg") }
-        // Doesn't need a Surface like video does, so it can just run for the whole
-        // screen's lifetime instead of being tied to onSurfaceTextureAvailable/
-        // Destroyed below.
-        try {
-            audioReceiver.start(AudioPacket.PORT)
-            log("listening for audio on port ${AudioPacket.PORT}")
-        } catch (e: Exception) {
-            log("audio listen failed: ${e::class.simpleName}: ${e.message}")
-        }
         videoReceiver.onRotationChanged = { rotation ->
             runOnUiThread {
                 currentRotation = rotation
@@ -219,12 +219,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         textureVideo.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
                 updateVideoTransform(textureVideo, videoContainer)
-                try {
-                    videoReceiver.start(VideoPacket.PORT, Surface(surface), VIDEO_WIDTH, VIDEO_HEIGHT)
-                    log("listening for video on port ${VideoPacket.PORT}")
-                } catch (e: Exception) {
-                    log("video listen failed: ${e::class.simpleName}: ${e.message}")
-                }
+                startVideo(surface)
             }
 
             override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
@@ -341,7 +336,63 @@ class ControllerDriveActivity : AppCompatActivity() {
                 tickHandler.postDelayed(this, 30)
             }
         }
-        tickHandler.post(tickRunnable!!)
+        // Not started here - onResume() does it, so the same single start point
+        // covers both first launch (onResume always follows onCreate) and coming
+        // back from a pause/lock. See onPause()'s doc for why this matters.
+    }
+
+    private fun startVideo(surface: SurfaceTexture) {
+        videoReceiver.stop() // idempotent - safe even if it wasn't already running
+        try {
+            videoReceiver.start(VideoPacket.PORT, Surface(surface), VIDEO_WIDTH, VIDEO_HEIGHT)
+            log("listening for video on port ${VideoPacket.PORT}")
+        } catch (e: Exception) {
+            log("video listen failed: ${e::class.simpleName}: ${e.message}")
+        }
+    }
+
+    private fun startAudio() {
+        audioReceiver.stop()
+        try {
+            audioReceiver.start(AudioPacket.PORT)
+            log("listening for audio on port ${AudioPacket.PORT}")
+        } catch (e: Exception) {
+            log("audio listen failed: ${e::class.simpleName}: ${e.message}")
+        }
+    }
+
+    /**
+     * Locking the phone doesn't reliably tear down and recreate the TextureView's
+     * Surface on every device - confirmed by direct report: video never came back
+     * after unlocking, only a full app restart fixed it (onSurfaceTextureAvailable
+     * simply never fired again). Rather than depend on that pairing, stop
+     * everything explicitly here and restart it explicitly in onResume().
+     *
+     * Stopping the steering/throttle tick loop here matters as much as the video:
+     * without it, the loop kept sending whatever steerX/throttleY a finger left on
+     * a slider at the moment of locking, continuously, for as long as the phone
+     * stayed locked - the vehicle's own failsafe (falls back to neutral after a
+     * gap in control frames) never got a gap to trigger on. That stale, frozen
+     * command - not the restart itself - is the more likely explanation for the
+     * servo "jittering" once a restart finally reconnected things.
+     */
+    override fun onPause() {
+        super.onPause()
+        tickRunnable?.let { tickHandler.removeCallbacks(it) }
+        // Finalizes the file properly instead of leaving it orphaned mid-recording -
+        // videoReceiver.stop()/audioReceiver.stop() below would otherwise drop their
+        // recorder references out from under an in-progress MuxerSession that never
+        // gets told to actually finish (see stopRecording()'s doc).
+        stopRecording(::log)
+        videoReceiver.stop()
+        audioReceiver.stop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        tickRunnable?.let { tickHandler.post(it) }
+        startAudio()
+        textureVideoView.surfaceTexture?.let { startVideo(it) }
     }
 
     private var isRecording = false
@@ -428,35 +479,47 @@ class ControllerDriveActivity : AppCompatActivity() {
                 buttonRecord.text = getString(R.string.controller_recording)
                 log("recording to ${target.displayPath}${if (target.session.expectAudio) " (with audio)" else ""}")
             } else {
-                videoReceiver.stopRecording()
-                audioReceiver.stopRecording()
-                val wroteAnything = muxerSession?.stop() ?: false
-                muxerSession = null
-                try {
-                    recordingPfd?.close()
-                } catch (_: Exception) {
-                }
-                recordingPfd = null
-                recordingUri?.let { uri ->
-                    if (wroteAnything) {
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                            val values = android.content.ContentValues().apply {
-                                put(android.provider.MediaStore.Video.Media.IS_PENDING, 0)
-                            }
-                            contentResolver.update(uri, values, null, null)
-                        }
-                    } else {
-                        // Nothing was ever written (no video arrived) - don't leave a
-                        // permanently-pending, empty entry behind in the gallery.
-                        contentResolver.delete(uri, null, null)
-                    }
-                }
-                recordingUri = null
-                isRecording = false
-                buttonRecord.text = getString(R.string.controller_record)
-                log(if (wroteAnything) "recording saved: $recordingDisplayPath" else "recording discarded - no video was received")
+                stopRecording(log)
             }
         }
+    }
+
+    /**
+     * Finalizes whatever's currently recording, if anything - shared by the Record
+     * button's own stop path, onPause() (so locking the phone mid-recording finishes
+     * the file properly instead of leaving a stuck-pending, orphaned MuxerSession
+     * that video/audio no longer feed once they're stopped for the pause), and
+     * onDestroy().
+     */
+    private fun stopRecording(log: (String) -> Unit) {
+        if (!isRecording) return
+        videoReceiver.stopRecording()
+        audioReceiver.stopRecording()
+        val wroteAnything = muxerSession?.stop() ?: false
+        muxerSession = null
+        try {
+            recordingPfd?.close()
+        } catch (_: Exception) {
+        }
+        recordingPfd = null
+        recordingUri?.let { uri ->
+            if (wroteAnything) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Video.Media.IS_PENDING, 0)
+                    }
+                    contentResolver.update(uri, values, null, null)
+                }
+            } else {
+                // Nothing was ever written (no video arrived) - don't leave a
+                // permanently-pending, empty entry behind in the gallery.
+                contentResolver.delete(uri, null, null)
+            }
+        }
+        recordingUri = null
+        isRecording = false
+        findViewById<Button>(R.id.buttonRecord).text = getString(R.string.controller_record)
+        log(if (wroteAnything) "recording saved: $recordingDisplayPath" else "recording discarded - no video was received")
     }
 
     /**
@@ -525,27 +588,11 @@ class ControllerDriveActivity : AppCompatActivity() {
     override fun onDestroy() {
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
         controlLink.close()
+        // Normally already a no-op here - onPause() (which always runs first) already
+        // finalizes any in-progress recording - kept as a defensive backstop.
+        stopRecording(::log)
         videoReceiver.stop()
         audioReceiver.stop()
-        // muxerSession.stop() (flushing the muxer's final moov atom) must finish
-        // BEFORE the FileDescriptor it was writing through gets closed below, or the
-        // file corrupts - order matters here.
-        if (isRecording) {
-            muxerSession?.stop()
-            muxerSession = null
-            try {
-                recordingPfd?.close()
-            } catch (_: Exception) {
-            }
-            recordingUri?.let { uri ->
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                    val values = android.content.ContentValues().apply {
-                        put(android.provider.MediaStore.Video.Media.IS_PENDING, 0)
-                    }
-                    runCatching { contentResolver.update(uri, values, null, null) }
-                }
-            }
-        }
         super.onDestroy()
     }
 }
