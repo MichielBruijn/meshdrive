@@ -89,7 +89,9 @@ class ControllerActivity : AppCompatActivity() {
     }
 
     /** One row: an online/offline dot (probed live, see ControlLink.probeOnline()),
-     * the address, and a small remove button - tapping the row itself connects. */
+     * a friendly assigned name in place of the raw address (ModePrefs.nameForVehicle()
+     * - per direct request, a known vehicle's Yggdrasil address shouldn't need to be
+     * shown at all), and a small remove button - tapping the row itself connects. */
     private fun addVehicleRow(address: String, container: LinearLayout) {
         fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
@@ -100,10 +102,17 @@ class ControllerActivity : AppCompatActivity() {
             setPadding(0, 0, dp(12), 0)
         }
         val addressText = TextView(this).apply {
-            text = address
+            text = address // placeholder until the name below resolves
             ellipsize = TextUtils.TruncateAt.MIDDLE
             maxLines = 1
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        lifecycleScope.launch {
+            val name = modePrefs.nameForVehicle(address)
+            // The raw address is still useful for troubleshooting a specific link,
+            // just not front-and-center - only tacked on in debug mode.
+            val debugEnabled = modePrefs.debugEnabled.first()
+            addressText.text = if (debugEnabled) "$name ($address)" else name
         }
         val removeButton = TextView(this).apply {
             text = "✕"
