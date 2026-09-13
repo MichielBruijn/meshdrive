@@ -7,8 +7,8 @@ import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
-import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -23,13 +23,17 @@ import nu.bruijn.rcvehicle.video.VideoPacket
 import nu.bruijn.rcvehicle.video.VideoReceiver
 
 /**
- * Fase 4 debug UI: sends steer/throttle to the vehicle over a direct UDP socket to
- * its known Yggdrasil address, and renders the video the vehicle sends back once
- * it has learned this phone's address from that same control traffic (see
+ * Real controller screen: video fills the background, steering joystick bottom-
+ * left (x axis), throttle joystick bottom-right (y axis, up = forward), STOP
+ * button always available, Steering Limit checkbox. The pairing/log strip at the
+ * top is only needed before/while connecting - it stays visible throughout for
+ * now since there's no "connected, hide setup" state tracked yet.
+ *
+ * Sends steer/throttle to the vehicle over a direct UDP socket to its known
+ * Yggdrasil address, and renders the video the vehicle sends back once it has
+ * learned this phone's address from that same control traffic (see
  * ControlLink's/VideoSender's docs for why these are plain UDP sockets instead of
- * the originally-planned WebRTC data channel/video track - stream-webrtc-android's
- * ICE never surfaces the Yggdrasil tun interface on a cellular-only phone,
- * confirmed via extensive real-hardware testing 2026-09-13).
+ * the originally-planned WebRTC data channel/video track).
  */
 class ControllerActivity : AppCompatActivity() {
 
@@ -39,6 +43,12 @@ class ControllerActivity : AppCompatActivity() {
     private val tickHandler = Handler(Looper.getMainLooper())
     private var tickRunnable: Runnable? = null
     private var seq = 0
+
+    // Latest joystick positions, read by the tick loop - not sent directly from
+    // onMove itself, so the send rate stays a steady ~33Hz regardless of touch
+    // event frequency (same reasoning as the vehicle-side debug sliders).
+    private var steerX = 0f
+    private var throttleY = 0f
 
     // Must be registered unconditionally at construction time (Activity Result API
     // requirement, before onCreate/onStart), not inside onCreate's click listener.
@@ -55,8 +65,6 @@ class ControllerActivity : AppCompatActivity() {
 
         val editAddress = findViewById<EditText>(R.id.editVehicleAddress)
         val logView = findViewById<TextView>(R.id.textRtcLog)
-        val seekSteer = findViewById<SeekBar>(R.id.seekSteer)
-        val seekThrottle = findViewById<SeekBar>(R.id.seekThrottle)
         val surfaceVideo = findViewById<SurfaceView>(R.id.surfaceVideo)
 
         lifecycleScope.launch {
@@ -118,27 +126,29 @@ class ControllerActivity : AppCompatActivity() {
             }
         }
 
+        findViewById<CheckBox>(R.id.checkSteerLimit).setOnCheckedChangeListener { _, checked ->
+            controlLink.sendSteerLimit(checked)
+        }
+
+        findViewById<Button>(R.id.buttonStop).setOnClickListener {
+            steerX = 0f
+            throttleY = 0f
+            controlLink.send(0f, 0f, seq++)
+        }
+
+        findViewById<JoystickView>(R.id.joystickSteer).onMove = { x, _ -> steerX = x }
+        // Touch y increases downward; up (forward throttle) must be positive, so negate.
+        findViewById<JoystickView>(R.id.joystickThrottle).onMove = { _, y -> throttleY = -y }
+
         // Fixed ~33Hz tick, same reasoning as the fase-2 debug UI: a steady heartbeat
         // is what the vehicle-side failsafe is designed to key off, not event-driven sends.
         tickRunnable = object : Runnable {
             override fun run() {
-                val steer = (seekSteer.progress - 100) / 100f
-                val throttle = (seekThrottle.progress - 100) / 100f
-                controlLink.send(steer, throttle, seq++)
+                controlLink.send(steerX, throttleY, seq++)
                 tickHandler.postDelayed(this, 30)
             }
         }
         tickHandler.post(tickRunnable!!)
-
-        val centerOnRelease = object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {}
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {
-                seekBar?.progress = 100
-            }
-        }
-        seekSteer.setOnSeekBarChangeListener(centerOnRelease)
-        seekThrottle.setOnSeekBarChangeListener(centerOnRelease)
     }
 
     override fun onDestroy() {

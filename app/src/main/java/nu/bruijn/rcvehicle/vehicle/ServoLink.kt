@@ -34,6 +34,15 @@ abstract class ServoLink(
     /** Write one channel's raw microsecond value ("PosJ{channel}={us}") to the board. */
     protected abstract fun send(channel: Int, us: Int)
 
+    /**
+     * Quick on/off for the firmware's Steering Limit (reduces Steer deflection as
+     * Throttle deflection increases) - mirrors the web UI's checkbox
+     * (GET /?SteerLimitOn=) via "SteerLimitOn={0|1}" over whichever transport this
+     * is. Immediate, not persisted to EEPROM, doesn't touch the configured
+     * strength - same as the firmware's own HTTP handler.
+     */
+    abstract fun setSteerLimitEnabled(enabled: Boolean)
+
     /** steer/throttle normalized to -1.0..1.0. */
     fun sendControl(steer: Float, throttle: Float) {
         lastControlAtMs = System.currentTimeMillis()

@@ -49,7 +49,15 @@ class ControlLink {
      * (unlike OkHttp/WebRTC's send(), which just enqueues onto their own thread).
      */
     fun send(steer: Float, throttle: Float, seq: Int) {
-        val data = ControlFrame.encode(steer, throttle, seq)
+        sendBytes(ControlFrame.encodeControl(steer, throttle, seq))
+    }
+
+    /** Controller side: toggle the vehicle's Steering Limit. Rare, unlike send() above. */
+    fun sendSteerLimit(enabled: Boolean) {
+        sendBytes(ControlFrame.encodeSteerLimit(enabled))
+    }
+
+    private fun sendBytes(data: ByteArray) {
         scope.launch {
             try {
                 socket?.send(DatagramPacket(data, data.size))

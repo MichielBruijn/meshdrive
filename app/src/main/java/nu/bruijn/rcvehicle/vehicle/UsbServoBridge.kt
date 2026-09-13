@@ -114,11 +114,19 @@ class UsbServoBridge(
     private val writeLock = Any()
 
     override fun send(channel: Int, us: Int) {
+        writeLine("PosJ$channel=$us")
+    }
+
+    override fun setSteerLimitEnabled(enabled: Boolean) {
+        writeLine("SteerLimitOn=${if (enabled) 1 else 0}")
+    }
+
+    private fun writeLine(line: String) {
         val p = port ?: return
         scope.launch {
             try {
                 synchronized(writeLock) {
-                    p.write("PosJ$channel=$us\n".toByteArray(), 200)
+                    p.write("$line\n".toByteArray(), 200)
                 }
             } catch (_: Exception) {
                 // best-effort, same reasoning as the wifi path - a dropped write

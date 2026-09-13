@@ -108,6 +108,10 @@ class ServoBridge(
         webSocket?.send("PosJ$channel=$us")
     }
 
+    override fun setSteerLimitEnabled(enabled: Boolean) {
+        webSocket?.send("SteerLimitOn=${if (enabled) 1 else 0}")
+    }
+
     override fun stop() {
         super.stop()
         webSocket?.close(1000, "stopping")

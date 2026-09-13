@@ -26,6 +26,7 @@ import kotlinx.coroutines.withContext
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.common.QrCode
 import nu.bruijn.rcvehicle.common.YggdrasilAddress
+import nu.bruijn.rcvehicle.control.ControlFrame
 import nu.bruijn.rcvehicle.control.ControlLink
 import nu.bruijn.rcvehicle.video.VideoPacket
 import nu.bruijn.rcvehicle.video.VideoSender
@@ -120,10 +121,18 @@ class VehicleActivity : AppCompatActivity() {
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     controlLink.listen(ControlLink.PORT) { decoded, senderAddress ->
-                        log("control #${decoded.seq}: steer=${decoded.steer} throttle=${decoded.throttle}")
-                        lastRemoteControlAtMs = System.currentTimeMillis()
-                        service?.activeLink?.sendControl(decoded.steer, decoded.throttle)
-                        maybeStartVideo(senderAddress, ::log)
+                        when (decoded) {
+                            is ControlFrame.Decoded.Control -> {
+                                log("control #${decoded.seq}: steer=${decoded.steer} throttle=${decoded.throttle}")
+                                lastRemoteControlAtMs = System.currentTimeMillis()
+                                service?.activeLink?.sendControl(decoded.steer, decoded.throttle)
+                                maybeStartVideo(senderAddress, ::log)
+                            }
+                            is ControlFrame.Decoded.SteerLimit -> {
+                                log("steer limit: ${decoded.enabled}")
+                                service?.activeLink?.setSteerLimitEnabled(decoded.enabled)
+                            }
+                        }
                     }
                     log("listening for UDP control on port ${ControlLink.PORT}")
                 } catch (e: Exception) {
