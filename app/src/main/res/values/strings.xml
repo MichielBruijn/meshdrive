@@ -29,6 +29,8 @@
     <string name="controller_remove_vehicle">Remove</string>
     <string name="controller_steer_limit">Limit steering at high throttle</string>
     <string name="controller_rear_view">Rear view</string>
+    <string name="controller_record">Record</string>
+    <string name="controller_recording">Stop recording</string>
     <string name="controller_quality_low">Low</string>
     <string name="controller_quality_medium">Med</string>
     <string name="controller_quality_high">High</string>

@@ -64,10 +64,11 @@
             android:text="@string/controller_steer_limit" />
 
         <!-- Switches which of the vehicle phone's two cameras streams - see
-             VideoSender.switchCamera(). Not a picture-in-picture mirror (that needs
-             concurrent dual-camera capture, not supported on every phone) - this
-             swaps the single stream, so the main view itself becomes the rear view
-             while checked. -->
+             VideoSender.switchCamera(). Not a picture-in-picture mirror: that needs
+             concurrent dual-camera capture, confirmed on real hardware (2026-09-13)
+             as unsupported here - CameraManager.concurrentCameraIds came back empty
+             on the Fairphone 5. This swaps the single stream instead, so the main
+             view itself becomes the rear view while checked. -->
         <CheckBox
             android:id="@+id/checkRearView"
             android:layout_width="wrap_content"
@@ -115,27 +116,39 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- Debug-only (log + FPS/latency): bottom instead of top - a top overlay kept
+         rendering under the status bar's clock/battery icons on some phones even with
+         this screen going immersive (WindowInsetsControllerCompat, onCreate), so bottom
+         sidesteps that entirely rather than chasing the immersive-mode gap further. -->
     <TextView
         android:id="@+id/textRtcLog"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|start"
+        android:layout_gravity="bottom|start"
         android:layout_margin="8dp"
         android:fontFamily="monospace"
         android:textSize="10sp"
         android:textColor="@android:color/white"
         android:maxLines="4" />
 
-    <!-- Debug overlay: decoded frame rate and control round-trip latency. -->
     <TextView
         android:id="@+id/textDebugOverlay"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|end"
+        android:layout_gravity="bottom|end"
         android:layout_margin="8dp"
         android:fontFamily="monospace"
         android:textSize="12sp"
         android:textColor="@android:color/white"
         android:text="FPS: -- | Latency: -- ms" />
+
+    <Button
+        android:id="@+id/buttonRecord"
+        style="?android:attr/buttonStyleSmall"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="8dp"
+        android:text="@string/controller_record" />
 
 </FrameLayout>

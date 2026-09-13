@@ -264,6 +264,8 @@ class ControllerDriveActivity : AppCompatActivity() {
             controlLink.sendCamera(checked)
         }
 
+        setUpRecordButton(::log)
+
         findViewById<SliderView>(R.id.sliderSteer).apply {
             vertical = false
             onMove = { x -> steerX = x }
@@ -300,6 +302,43 @@ class ControllerDriveActivity : AppCompatActivity() {
             }
         }
         tickHandler.post(tickRunnable!!)
+    }
+
+    private var isRecording = false
+    private var recordingPath: String? = null
+
+    /**
+     * Records the incoming video stream to an .mp4 file (VideoReceiver.startRecording()/
+     * VideoRecorder - remuxes the same H.264 access units already being decoded, no
+     * re-encoding). Saved under this app's own external files dir (Movies/) - no
+     * storage permission needed on any supported Android version, but not visible in a
+     * gallery app; the log line gives the exact path for pulling it off some other way.
+     */
+    private fun setUpRecordButton(log: (String) -> Unit) {
+        val buttonRecord = findViewById<Button>(R.id.buttonRecord)
+        buttonRecord.setOnClickListener {
+            if (!isRecording) {
+                val dir = getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES)
+                if (dir == null) {
+                    log("record: no storage available")
+                    return@setOnClickListener
+                }
+                dir.mkdirs()
+                val fileName = "meshdrive_" +
+                    java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date()) + ".mp4"
+                val path = java.io.File(dir, fileName).absolutePath
+                videoReceiver.startRecording(path) { msg -> log("record: $msg") }
+                recordingPath = path
+                isRecording = true
+                buttonRecord.text = getString(R.string.controller_recording)
+                log("recording to $path")
+            } else {
+                val wroteAnything = videoReceiver.stopRecording()
+                isRecording = false
+                buttonRecord.text = getString(R.string.controller_record)
+                log(if (wroteAnything) "recording saved: $recordingPath" else "recording discarded - no video was received")
+            }
+        }
     }
 
     /**

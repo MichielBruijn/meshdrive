@@ -49,7 +49,27 @@ class VideoReceiver {
     private var fpsFrameCount = 0
     private var fpsWindowStartMs = 0L
 
+    // Recording (ControllerDriveActivity's Record button) - VideoRecorder remuxes the
+    // exact same access units fed to the decoder directly into an .mp4, no re-encoding.
+    // width/height are remembered here since VideoRecorder needs them for its track
+    // format and this is the one place that already knows them.
+    private var recorder: VideoRecorder? = null
+    private var videoWidth = 640
+    private var videoHeight = 480
+
+    fun startRecording(outputPath: String, onError: (String) -> Unit) {
+        val r = VideoRecorder()
+        r.onError = onError
+        r.start(outputPath)
+        recorder = r
+    }
+
+    /** True if anything was actually recorded (no video ever arrived otherwise). */
+    fun stopRecording(): Boolean = recorder?.stop().also { recorder = null } ?: false
+
     fun start(port: Int, outputSurface: Surface, width: Int = 640, height: Int = 480) {
+        videoWidth = width
+        videoHeight = height
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
         val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         codec.configure(format, outputSurface, null, 0)
@@ -102,6 +122,7 @@ class VideoReceiver {
                 offset += part.size
             }
             feedDecoder(assembled)
+            recorder?.feed(assembled, videoWidth, videoHeight)
         }
 
         // Drop stale incomplete frames so a lost fragment can't leak memory forever.
@@ -146,6 +167,8 @@ class VideoReceiver {
     }
 
     fun stop() {
+        recorder?.stop()
+        recorder = null
         receiveJob?.cancel()
         socket?.close()
         socket = null
