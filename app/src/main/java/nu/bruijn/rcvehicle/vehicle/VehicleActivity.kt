@@ -75,6 +75,13 @@ class VehicleActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Nobody touches this phone's own screen while driving - it's mounted on
+        // the vehicle, the driver is looking at the controller phone instead.
+        // Without this, the display timeout locks it, Android revokes camera
+        // access from the now-backgrounded app, and VideoSender dies mid-stream
+        // (confirmed on real hardware as onError firing "camera error: 3" -
+        // ERROR_CAMERA_DISABLED - after a delay matching the screen timeout).
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_vehicle)
 
         val editIp = findViewById<EditText>(R.id.editEspIp)

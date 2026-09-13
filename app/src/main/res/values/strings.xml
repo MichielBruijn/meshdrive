@@ -14,6 +14,7 @@
     <string name="vehicle_rtc_title">Debug: WebRTC over Yggdrasil (fase 4)</string>
     <string name="vehicle_own_address_detecting">Eigen Yggdrasil-adres: zoeken…</string>
     <string name="vehicle_start_listening">Start luisteren op signaling-poort</string>
+    <string name="controller_setup_title">Verbinden met voertuig</string>
     <string name="controller_vehicle_address_hint">Yggdrasil-adres van het voertuig</string>
     <string name="controller_connect">Verbinden</string>
     <string name="controller_scan_qr">Scan QR-code van voertuig</string>

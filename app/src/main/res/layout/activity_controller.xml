@@ -1,89 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/black">
+    android:fitsSystemWindows="true">
 
-    <SurfaceView
-        android:id="@+id/surfaceVideo"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="24dp">
 
-    <!-- Steering, bottom-left. Only x is used. -->
-    <nu.bruijn.rcvehicle.controller.JoystickView
-        android:id="@+id/joystickSteer"
-        android:layout_width="170dp"
-        android:layout_height="170dp"
-        android:layout_gravity="bottom|start"
-        android:layout_margin="20dp" />
-
-    <!-- Throttle, bottom-right. Only y is used. -->
-    <nu.bruijn.rcvehicle.controller.JoystickView
-        android:id="@+id/joystickThrottle"
-        android:layout_width="170dp"
-        android:layout_height="170dp"
-        android:layout_gravity="bottom|end"
-        android:layout_margin="20dp" />
-
-    <Button
-        android:id="@+id/buttonStop"
+    <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="24dp"
-        android:text="@string/controller_stop" />
+        android:text="@string/controller_setup_title"
+        android:textSize="18sp"
+        android:layout_marginBottom="16dp" />
 
-    <!-- Setup/debug strip: pairing, Steering Limit, connection log. Not meant to
-         stay open while actually driving - fold it away once connected. -->
-    <LinearLayout
-        android:id="@+id/layoutSetup"
+    <EditText
+        android:id="@+id/editVehicleAddress"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:background="#99000000"
-        android:padding="16dp"
-        android:fitsSystemWindows="true">
+        android:hint="@string/controller_vehicle_address_hint"
+        android:inputType="text" />
 
-        <EditText
-            android:id="@+id/editVehicleAddress"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="@string/controller_vehicle_address_hint"
-            android:textColor="@android:color/white"
-            android:textColorHint="#CCFFFFFF"
-            android:inputType="text" />
+    <Button
+        android:id="@+id/buttonScanQr"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/controller_scan_qr" />
 
-        <Button
-            android:id="@+id/buttonScanQr"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/controller_scan_qr" />
+    <Button
+        android:id="@+id/buttonConnectRtc"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/controller_connect" />
 
-        <Button
-            android:id="@+id/buttonConnectRtc"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/controller_connect" />
-
-        <CheckBox
-            android:id="@+id/checkSteerLimit"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:textColor="@android:color/white"
-            android:text="@string/controller_steer_limit" />
-
-        <TextView
-            android:id="@+id/textRtcLog"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:fontFamily="monospace"
-            android:textSize="11sp"
-            android:textColor="@android:color/white" />
-
-    </LinearLayout>
-
-</FrameLayout>
+</LinearLayout>
+</ScrollView>

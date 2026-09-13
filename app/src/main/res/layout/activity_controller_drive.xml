@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <SurfaceView
+        android:id="@+id/surfaceVideo"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Steering, bottom-left. Only x is used. -->
+    <nu.bruijn.rcvehicle.controller.JoystickView
+        android:id="@+id/joystickSteer"
+        android:layout_width="170dp"
+        android:layout_height="170dp"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="20dp" />
+
+    <!-- Throttle, bottom-right. Only y is used. -->
+    <nu.bruijn.rcvehicle.controller.JoystickView
+        android:id="@+id/joystickThrottle"
+        android:layout_width="170dp"
+        android:layout_height="170dp"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="20dp" />
+
+    <Button
+        android:id="@+id/buttonStop"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="24dp"
+        android:text="@string/controller_stop" />
+
+    <CheckBox
+        android:id="@+id/checkSteerLimit"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="12dp"
+        android:textColor="@android:color/white"
+        android:text="@string/controller_steer_limit" />
+
+    <TextView
+        android:id="@+id/textRtcLog"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="8dp"
+        android:fontFamily="monospace"
+        android:textSize="10sp"
+        android:textColor="@android:color/white"
+        android:maxLines="4" />
+
+</FrameLayout>

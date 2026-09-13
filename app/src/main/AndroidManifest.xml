@@ -41,16 +41,29 @@
                 android:resource="@xml/device_filter" />
         </activity>
 
-        <!-- configChanges: both activities own live state (USB/UDP sockets, camera
-             capture, video encode/decode) that must survive a rotation. Without
-             this, Android's default destroy-and-recreate-the-Activity behavior on
-             orientation change tore all of that down - confirmed on real hardware
-             as "turning the vehicle phone stops the video on the controller". -->
+        <!-- Pairing/setup screen: address field, QR scan, connect. Plain portrait. -->
         <activity
             android:name=".controller.ControllerActivity"
+            android:exported="false" />
+
+        <!-- The actual driving screen: video + joysticks + STOP. Always landscape -
+             two-hand steer/throttle needs the width, and the setup screen's
+             portrait keyboard use has no place here. configChanges: this owns live
+             state (UDP control link, video receiver) that must survive a rotation -
+             without it, Android's default destroy-and-recreate-the-Activity
+             behavior on orientation change tore all of that down (confirmed on
+             real hardware as "turning the vehicle phone stops the video on the
+             controller", back when this UI lived in one un-orientation-locked
+             activity). -->
+        <activity
+            android:name=".controller.ControllerDriveActivity"
             android:exported="false"
+            android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
 
+        <!-- configChanges: owns live state (USB/UDP sockets, camera capture, video
+             encoding) that must survive a rotation - see ControllerDriveActivity's
+             comment above for why. -->
         <activity
             android:name=".vehicle.VehicleActivity"
             android:exported="false"
