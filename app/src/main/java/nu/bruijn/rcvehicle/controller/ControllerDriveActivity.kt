@@ -323,38 +323,108 @@ class ControllerDriveActivity : AppCompatActivity() {
     }
 
     private var isRecording = false
-    private var recordingPath: String? = null
+    private var recordingDisplayPath: String? = null
+    private var recordingUri: android.net.Uri? = null
+    private var recordingPfd: android.os.ParcelFileDescriptor? = null
+
+    /** Holds everything one recording attempt needs, whichever way it was created. */
+    private class RecordingTarget(
+        val muxer: android.media.MediaMuxer,
+        val uri: android.net.Uri?,
+        val pfd: android.os.ParcelFileDescriptor?,
+        val displayPath: String,
+    )
 
     /**
-     * Records the incoming video stream to an .mp4 file (VideoReceiver.startRecording()/
+     * On API 29+, inserts a new entry into MediaStore's video collection (Movies/
+     * MeshDrive/) and hands VideoRecorder a MediaMuxer built on that entry's own
+     * FileDescriptor - the standard scoped-storage way to produce a file that shows
+     * up in a gallery app immediately, no storage permission needed. IS_PENDING=1
+     * hides it from other apps until setUpRecordButton() clears it on stop() (a
+     * recording that's still being written isn't done yet). Below API 29 (scoped
+     * storage didn't exist), falls back to this app's own external files dir -
+     * works file, just isn't gallery-visible, but that combination is vanishingly
+     * rare on real hardware at this point.
+     */
+    private fun createRecordingTarget(): RecordingTarget? {
+        val fileName = "meshdrive_" +
+            java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date()) + ".mp4"
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, fileName)
+                put(android.provider.MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, android.os.Environment.DIRECTORY_MOVIES + "/MeshDrive")
+                put(android.provider.MediaStore.Video.Media.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                ?: return null
+            val pfd = try {
+                contentResolver.openFileDescriptor(uri, "rw")
+            } catch (e: Exception) {
+                contentResolver.delete(uri, null, null)
+                return null
+            } ?: run {
+                contentResolver.delete(uri, null, null)
+                return null
+            }
+            val muxer = android.media.MediaMuxer(pfd.fileDescriptor, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            return RecordingTarget(muxer, uri, pfd, "Movies/MeshDrive/$fileName")
+        }
+
+        val dir = getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES) ?: return null
+        dir.mkdirs()
+        val file = java.io.File(dir, fileName)
+        val muxer = android.media.MediaMuxer(file.absolutePath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        return RecordingTarget(muxer, null, null, file.absolutePath)
+    }
+
+    /**
+     * Records the incoming video stream to an .mp4 (VideoReceiver.startRecording()/
      * VideoRecorder - remuxes the same H.264 access units already being decoded, no
-     * re-encoding). Saved under this app's own external files dir (Movies/) - no
-     * storage permission needed on any supported Android version, but not visible in a
-     * gallery app; the log line gives the exact path for pulling it off some other way.
+     * re-encoding) - see createRecordingTarget() for where the file actually goes.
      */
     private fun setUpRecordButton(log: (String) -> Unit) {
         val buttonRecord = findViewById<Button>(R.id.buttonRecord)
         buttonRecord.setOnClickListener {
             if (!isRecording) {
-                val dir = getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES)
-                if (dir == null) {
-                    log("record: no storage available")
+                val target = createRecordingTarget()
+                if (target == null) {
+                    log("record: could not create output file")
                     return@setOnClickListener
                 }
-                dir.mkdirs()
-                val fileName = "meshdrive_" +
-                    java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date()) + ".mp4"
-                val path = java.io.File(dir, fileName).absolutePath
-                videoReceiver.startRecording(path) { msg -> log("record: $msg") }
-                recordingPath = path
+                videoReceiver.startRecording(target.muxer) { msg -> log("record: $msg") }
+                recordingUri = target.uri
+                recordingPfd = target.pfd
+                recordingDisplayPath = target.displayPath
                 isRecording = true
                 buttonRecord.text = getString(R.string.controller_recording)
-                log("recording to $path")
+                log("recording to ${target.displayPath}")
             } else {
                 val wroteAnything = videoReceiver.stopRecording()
+                try {
+                    recordingPfd?.close()
+                } catch (_: Exception) {
+                }
+                recordingPfd = null
+                recordingUri?.let { uri ->
+                    if (wroteAnything) {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            val values = android.content.ContentValues().apply {
+                                put(android.provider.MediaStore.Video.Media.IS_PENDING, 0)
+                            }
+                            contentResolver.update(uri, values, null, null)
+                        }
+                    } else {
+                        // Nothing was ever written (no video arrived) - don't leave a
+                        // permanently-pending, empty entry behind in the gallery.
+                        contentResolver.delete(uri, null, null)
+                    }
+                }
+                recordingUri = null
                 isRecording = false
                 buttonRecord.text = getString(R.string.controller_record)
-                log(if (wroteAnything) "recording saved: $recordingPath" else "recording discarded - no video was received")
+                log(if (wroteAnything) "recording saved: $recordingDisplayPath" else "recording discarded - no video was received")
             }
         }
     }
@@ -425,7 +495,24 @@ class ControllerDriveActivity : AppCompatActivity() {
     override fun onDestroy() {
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
         controlLink.close()
+        // videoReceiver.stop() (which stops the recorder, flushing the muxer's final
+        // moov atom) must finish BEFORE the FileDescriptor it was writing through
+        // gets closed below, or the file corrupts - order matters here.
         videoReceiver.stop()
+        if (isRecording) {
+            try {
+                recordingPfd?.close()
+            } catch (_: Exception) {
+            }
+            recordingUri?.let { uri ->
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Video.Media.IS_PENDING, 0)
+                    }
+                    runCatching { contentResolver.update(uri, values, null, null) }
+                }
+            }
+        }
         super.onDestroy()
     }
 }

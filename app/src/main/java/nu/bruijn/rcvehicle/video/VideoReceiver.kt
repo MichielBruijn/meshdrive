@@ -57,10 +57,10 @@ class VideoReceiver {
     private var videoWidth = 640
     private var videoHeight = 480
 
-    fun startRecording(outputPath: String, onError: (String) -> Unit) {
+    fun startRecording(muxer: android.media.MediaMuxer, onError: (String) -> Unit) {
         val r = VideoRecorder()
         r.onError = onError
-        r.start(outputPath)
+        r.start(muxer)
         recorder = r
     }
 

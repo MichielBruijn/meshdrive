@@ -29,8 +29,13 @@ class VideoRecorder {
 
     var onError: ((String) -> Unit)? = null
 
-    fun start(outputPath: String) {
-        muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    /** Takes an already-constructed MediaMuxer rather than a path - lets the caller
+     * decide how the output is actually created (a plain file, or a MediaStore
+     * entry's FileDescriptor so a recording shows up in the gallery like any other
+     * video - see ControllerDriveActivity's setUpRecordButton()), without this class
+     * needing to know anything about scoped storage/permissions. */
+    fun start(muxer: MediaMuxer) {
+        this.muxer = muxer
         videoTrackIndex = -1
         started = false
         startTimeUs = -1L
