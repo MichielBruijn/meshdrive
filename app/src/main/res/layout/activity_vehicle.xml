@@ -23,6 +23,38 @@
         android:layout_height="wrap_content"
         android:text="@string/vehicle_connect_usb" />
 
+    <!-- Firmware update over the same USB cable - see UsbServoBridge.checkFirmwareVersion()/
+         flashFirmware() and the firmware's own usbFirmwareUpdate(). buttonInstallUpdate stays
+         hidden until a check finds a newer release. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/buttonCheckUpdate"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/vehicle_check_update" />
+
+        <Button
+            android:id="@+id/buttonInstallUpdate"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:text="@string/vehicle_install_update"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/textUpdateStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp" />
+
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

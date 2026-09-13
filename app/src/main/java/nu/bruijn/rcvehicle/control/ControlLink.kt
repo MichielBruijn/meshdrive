@@ -1,9 +1,11 @@
 package nu.bruijn.rcvehicle.control
 
+import android.os.SystemClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.DatagramPacket
@@ -34,11 +36,31 @@ class ControlLink {
     private var socket: DatagramSocket? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var receiveJob: Job? = null
+    private var pingJob: Job? = null
 
     /** Controller side: connect to the vehicle's known Yggdrasil address. */
     fun connect(address: String, port: Int) {
         socket = DatagramSocket().apply {
             connect(InetAddress.getByName(address), port)
+            markHighPriority()
+        }
+    }
+
+    /**
+     * Marks this socket's packets DSCP Expedited Forwarding (0xB8) - a best-effort
+     * request that any network hop honoring DSCP favors control traffic over the
+     * (much heavier) video stream, which is left at default best-effort. Explicitly
+     * best-effort: most consumer/cellular paths ignore DSCP entirely, but it's the
+     * standard, near-zero-cost way to ask, and control traffic staying tiny (9 bytes,
+     * ~33Hz) means it barely needs the concession anyway - the real headroom for
+     * "control always wins" comes from video adapting its own bitrate down (see
+     * VideoQuality / ControllerDriveActivity's auto-quality loop) rather than from
+     * fighting video for the same pipe.
+     */
+    private fun DatagramSocket.markHighPriority() {
+        try {
+            trafficClass = 0xB8
+        } catch (_: Exception) {
         }
     }
 
@@ -55,6 +77,42 @@ class ControlLink {
     /** Controller side: toggle the vehicle's Steering Limit. Rare, unlike send() above. */
     fun sendSteerLimit(enabled: Boolean) {
         sendBytes(ControlFrame.encodeSteerLimit(enabled))
+    }
+
+    /** Controller side: ask the vehicle to switch its video encoder to a different VideoQuality preset. */
+    fun sendQuality(presetIndex: Int) {
+        sendBytes(ControlFrame.encodeQuality(presetIndex))
+    }
+
+    /**
+     * Controller side: periodically pings the vehicle over the same connected socket
+     * used by send(), and reports round-trip time (ms) via onRtt as replies come back -
+     * for the FPS/latency debug overlay. Must be called after connect(). The vehicle
+     * side needs no matching call: listen() below replies to any Ping automatically.
+     */
+    fun startPing(intervalMs: Long = 1000, onRtt: (Long) -> Unit) {
+        val sock = socket ?: return
+        pingJob = scope.launch {
+            while (isActive) {
+                sendBytes(ControlFrame.encodePing(SystemClock.elapsedRealtime()))
+                delay(intervalMs)
+            }
+        }
+        receiveJob = scope.launch {
+            val buffer = ByteArray(64)
+            val packet = DatagramPacket(buffer, buffer.size)
+            while (isActive) {
+                try {
+                    sock.receive(packet)
+                    val decoded = ControlFrame.decode(packet.data, packet.length)
+                    if (decoded is ControlFrame.Decoded.Pong) {
+                        onRtt(SystemClock.elapsedRealtime() - decoded.sentAtMs)
+                    }
+                } catch (_: Exception) {
+                    if (!isActive) break
+                }
+            }
+        }
     }
 
     private fun sendBytes(data: ByteArray) {
@@ -75,7 +133,7 @@ class ControlLink {
      * the destination for the video stream, without a separate discovery step.
      */
     fun listen(port: Int, onReceived: (ControlFrame.Decoded, InetAddress) -> Unit) {
-        val sock = DatagramSocket(port)
+        val sock = DatagramSocket(port).apply { markHighPriority() }
         socket = sock
         receiveJob = scope.launch {
             val buffer = ByteArray(64)
@@ -83,7 +141,19 @@ class ControlLink {
             while (isActive) {
                 try {
                     sock.receive(packet)
-                    ControlFrame.decode(packet.data, packet.length)?.let { onReceived(it, packet.address) }
+                    val decoded = ControlFrame.decode(packet.data, packet.length) ?: continue
+                    if (decoded is ControlFrame.Decoded.Ping) {
+                        // Latency probe reply - handled here rather than surfaced to
+                        // onReceived, since every caller of listen() just wants real
+                        // control traffic, not to know about the debug ping/pong.
+                        val pong = ControlFrame.encodePong(decoded.sentAtMs)
+                        try {
+                            sock.send(DatagramPacket(pong, pong.size, packet.address, packet.port))
+                        } catch (_: Exception) {
+                        }
+                    } else {
+                        onReceived(decoded, packet.address)
+                    }
                 } catch (_: Exception) {
                     if (!isActive) break
                 }
@@ -93,6 +163,7 @@ class ControlLink {
 
     fun close() {
         receiveJob?.cancel()
+        pingJob?.cancel()
         socket?.close()
         socket = null
     }

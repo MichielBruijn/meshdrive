@@ -26,6 +26,9 @@ class MainActivity : AppCompatActivity() {
         findViewById<android.widget.Button>(R.id.buttonVehicle).setOnClickListener {
             selectMode(AppMode.VEHICLE)
         }
+
+        val versionName = packageManager.getPackageInfo(packageName, 0).versionName
+        findViewById<android.widget.TextView>(R.id.textAppVersion).text = "v$versionName"
     }
 
     private fun selectMode(mode: AppMode) {

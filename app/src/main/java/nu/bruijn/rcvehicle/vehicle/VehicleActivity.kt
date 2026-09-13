@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
@@ -22,13 +23,16 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.common.QrCode
 import nu.bruijn.rcvehicle.common.YggdrasilAddress
 import nu.bruijn.rcvehicle.control.ControlFrame
 import nu.bruijn.rcvehicle.control.ControlLink
 import nu.bruijn.rcvehicle.video.VideoPacket
+import nu.bruijn.rcvehicle.video.VideoQuality
 import nu.bruijn.rcvehicle.video.VideoSender
 import java.net.InetAddress
 
@@ -61,6 +65,9 @@ class VehicleActivity : AppCompatActivity() {
     private var videoStarted = false
     private var lastRemoteControlAtMs = 0L
 
+    // Set once onServiceConnected below has a service to attach it to - see setUsbButtonConnected() in onCreate.
+    private var onUsbConnectedChanged: ((Boolean) -> Unit)? = null
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val localBinder = binder as VehicleForegroundService.LocalBinder
@@ -68,6 +75,9 @@ class VehicleActivity : AppCompatActivity() {
             bound = true
             service?.onStatus = { status ->
                 runOnUiThread { findViewById<TextView>(R.id.textStatus).text = status }
+            }
+            service?.usbServoBridge?.onConnected = { connected ->
+                runOnUiThread { onUsbConnectedChanged?.invoke(connected) }
             }
         }
 
@@ -105,9 +115,22 @@ class VehicleActivity : AppCompatActivity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1)
         }
 
-        findViewById<Button>(R.id.buttonConnectUsb).setOnClickListener {
+        val buttonConnectUsb = findViewById<Button>(R.id.buttonConnectUsb)
+        val defaultUsbButtonTint = buttonConnectUsb.backgroundTintList
+        val defaultUsbButtonText = buttonConnectUsb.text
+        val usbConnectedTint = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#2E7D32"))
+
+        fun setUsbButtonConnected(connected: Boolean) {
+            buttonConnectUsb.backgroundTintList = if (connected) usbConnectedTint else defaultUsbButtonTint
+            buttonConnectUsb.text = if (connected) getString(R.string.vehicle_usb_connected) else defaultUsbButtonText
+        }
+        onUsbConnectedChanged = ::setUsbButtonConnected
+
+        buttonConnectUsb.setOnClickListener {
             service?.connectUsb()
         }
+
+        setUpFirmwareUpdateUi()
 
         findViewById<Button>(R.id.buttonConnect).setOnClickListener {
             service?.connectToEsp(editIp.text.toString().trim())
@@ -117,10 +140,10 @@ class VehicleActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val address = withContext(Dispatchers.IO) { YggdrasilAddress.detect() }
             if (address != null) {
-                textOwnAddress.text = "Eigen Yggdrasil-adres: $address"
+                textOwnAddress.text = "Own Yggdrasil address: $address"
                 imageQr.setImageBitmap(QrCode.encode(address))
             } else {
-                textOwnAddress.text = "Eigen Yggdrasil-adres: niet gevonden - Yggdrasil-app wordt geopend…"
+                textOwnAddress.text = "Own Yggdrasil address: not found - opening Yggdrasil app…"
                 // There's no public API to enable Yggdrasil's VPN from another app
                 // (its own state broadcast is LocalBroadcastManager-only, checked in
                 // its source - not visible outside its own process), so the best
@@ -135,7 +158,7 @@ class VehicleActivity : AppCompatActivity() {
 
         videoSender.onError = { msg -> log("video: $msg") }
 
-        findViewById<Button>(R.id.buttonListen).setOnClickListener {
+        fun startListening() {
             controlLink.close()
             logView.text = ""
             lifecycleScope.launch(Dispatchers.IO) {
@@ -146,11 +169,28 @@ class VehicleActivity : AppCompatActivity() {
                                 log("control #${decoded.seq}: steer=${decoded.steer} throttle=${decoded.throttle}")
                                 lastRemoteControlAtMs = System.currentTimeMillis()
                                 service?.activeLink?.sendControl(decoded.steer, decoded.throttle)
+                                // Sliders track whatever is actually being sent to the
+                                // servo, remote or local - a live readout, not just a
+                                // local debug input (they're locked out from sending
+                                // while a remote controller is active anyway, see the
+                                // tick loop below, so moving them here doesn't fight it).
+                                runOnUiThread {
+                                    seekSteer.progress = ((decoded.steer + 1f) * 100).toInt()
+                                    seekThrottle.progress = ((decoded.throttle + 1f) * 100).toInt()
+                                }
                                 maybeStartVideo(senderAddress, ::log)
                             }
                             is ControlFrame.Decoded.SteerLimit -> {
                                 log("steer limit: ${decoded.enabled}")
                                 service?.activeLink?.setSteerLimitEnabled(decoded.enabled)
+                            }
+                            is ControlFrame.Decoded.Quality -> {
+                                val quality = VideoQuality.fromIndex(decoded.presetIndex)
+                                log("quality: ${quality.label}")
+                                videoSender.setQuality(quality)
+                            }
+                            is ControlFrame.Decoded.Ping, is ControlFrame.Decoded.Pong -> {
+                                // Handled transparently inside ControlLink.listen() - never reaches here.
                             }
                         }
                     }
@@ -160,6 +200,14 @@ class VehicleActivity : AppCompatActivity() {
                 }
             }
         }
+
+        // Starts as soon as the screen opens - no reason to make the driver tap a
+        // button first, this doesn't depend on the ESP32 connection above (the
+        // controller can connect and the video can start before/without a servo
+        // link). The button stays wired to the same function as a manual
+        // restart/clear-log, e.g. after fiddling with the ESP32 connection.
+        startListening()
+        findViewById<Button>(R.id.buttonListen).setOnClickListener { startListening() }
 
         val listener = object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {}
@@ -200,6 +248,88 @@ class VehicleActivity : AppCompatActivity() {
         val intent = Intent(this, VehicleForegroundService::class.java)
         startForegroundService(intent)
         bindService(intent, connection, Context.BIND_AUTO_CREATE)
+    }
+
+    /**
+     * "Check for update"/"Install update" over the same USB cable as normal driving -
+     * see UsbServoBridge.checkFirmwareVersion()/flashFirmware() and the firmware's
+     * own usbFirmwareUpdate(). Only works while connected via USB (checkUsb needs
+     * the board to answer "GETVERSION"), which is why this only checks
+     * service?.usbServoBridge specifically, not whatever activeLink happens to be.
+     */
+    private fun setUpFirmwareUpdateUi() {
+        val buttonCheckUpdate = findViewById<Button>(R.id.buttonCheckUpdate)
+        val buttonInstallUpdate = findViewById<Button>(R.id.buttonInstallUpdate)
+        val textUpdateStatus = findViewById<TextView>(R.id.textUpdateStatus)
+        var pendingRelease: FirmwareUpdater.Release? = null
+
+        buttonCheckUpdate.setOnClickListener {
+            buttonCheckUpdate.isEnabled = false
+            buttonInstallUpdate.visibility = View.GONE
+            textUpdateStatus.text = "Checking board version…"
+            lifecycleScope.launch {
+                val currentVersion = withContext(Dispatchers.IO) {
+                    suspendCancellableCoroutine<String?> { cont ->
+                        service?.usbServoBridge?.checkFirmwareVersion { cont.resume(it) } ?: cont.resume(null)
+                    }
+                }
+                if (currentVersion == null) {
+                    textUpdateStatus.text = "Could not read board version - connect via USB first"
+                    buttonCheckUpdate.isEnabled = true
+                    return@launch
+                }
+                textUpdateStatus.text = "Board is v$currentVersion, checking GitHub…"
+                val release = withContext(Dispatchers.IO) { FirmwareUpdater.fetchLatestRelease() }
+                buttonCheckUpdate.isEnabled = true
+                when {
+                    release == null -> textUpdateStatus.text = "Board v$currentVersion - could not reach GitHub"
+                    FirmwareUpdater.isNewer(release.version, currentVersion) -> {
+                        pendingRelease = release
+                        textUpdateStatus.text = "Update available: v${release.version} (board is v$currentVersion)"
+                        buttonInstallUpdate.visibility = View.VISIBLE
+                    }
+                    else -> textUpdateStatus.text = "Board v$currentVersion - up to date"
+                }
+            }
+        }
+
+        buttonInstallUpdate.setOnClickListener {
+            val release = pendingRelease ?: return@setOnClickListener
+            buttonInstallUpdate.isEnabled = false
+            buttonCheckUpdate.isEnabled = false
+            textUpdateStatus.text = "Downloading v${release.version}…"
+            lifecycleScope.launch {
+                val bytes = withContext(Dispatchers.IO) { FirmwareUpdater.download(release.downloadUrl) }
+                if (bytes == null) {
+                    textUpdateStatus.text = "Download failed"
+                    buttonInstallUpdate.isEnabled = true
+                    buttonCheckUpdate.isEnabled = true
+                    return@launch
+                }
+                textUpdateStatus.text = "Flashing 0%…"
+                val (success, message) = suspendCancellableCoroutine<Pair<Boolean, String>> { cont ->
+                    val bridge = service?.usbServoBridge
+                    if (bridge == null) {
+                        cont.resume(false to "not connected")
+                    } else {
+                        bridge.flashFirmware(
+                            bytes,
+                            onProgress = { written, total ->
+                                runOnUiThread { textUpdateStatus.text = "Flashing ${written * 100 / total}%…" }
+                            },
+                            onResult = { ok, msg -> cont.resume(ok to msg) },
+                        )
+                    }
+                }
+                textUpdateStatus.text = if (success) "v${release.version} installed - $message" else "Update failed: $message"
+                buttonCheckUpdate.isEnabled = true
+                if (success) {
+                    pendingRelease = null
+                } else {
+                    buttonInstallUpdate.isEnabled = true
+                }
+            }
+        }
     }
 
     private fun maybeStartVideo(controllerAddress: InetAddress, log: (String) -> Unit) {

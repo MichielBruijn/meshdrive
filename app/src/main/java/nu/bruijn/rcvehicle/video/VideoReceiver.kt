@@ -2,6 +2,7 @@ package nu.bruijn.rcvehicle.video
 
 import android.media.MediaCodec
 import android.media.MediaFormat
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import kotlinx.coroutines.CoroutineScope
@@ -31,6 +32,11 @@ class VideoReceiver {
 
     /** Fires only when the vehicle's reported orientation actually changes. */
     var onRotationChanged: ((Int) -> Unit)? = null
+
+    /** Fires roughly once/sec with the decoded-and-rendered frame rate, for a debug overlay. */
+    var onFps: ((Float) -> Unit)? = null
+    private var fpsFrameCount = 0
+    private var fpsWindowStartMs = 0L
 
     fun start(port: Int, outputSurface: Surface, width: Int = 640, height: Int = 480) {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
@@ -101,10 +107,23 @@ class VideoReceiver {
             var outIndex = codec.dequeueOutputBuffer(info, 0)
             while (outIndex >= 0) {
                 codec.releaseOutputBuffer(outIndex, true) // true = render straight to the Surface
+                countFrameForFps()
                 outIndex = codec.dequeueOutputBuffer(info, 0)
             }
         } catch (e: Exception) {
             Log.e("VideoReceiver", "decode error", e)
+        }
+    }
+
+    private fun countFrameForFps() {
+        val now = SystemClock.elapsedRealtime()
+        if (fpsWindowStartMs == 0L) fpsWindowStartMs = now
+        fpsFrameCount++
+        val elapsed = now - fpsWindowStartMs
+        if (elapsed >= 1000) {
+            onFps?.invoke(fpsFrameCount * 1000f / elapsed)
+            fpsFrameCount = 0
+            fpsWindowStartMs = now
         }
     }
 
@@ -123,5 +142,7 @@ class VideoReceiver {
         pending.clear()
         pendingRotation.clear()
         lastRotation = -1
+        fpsFrameCount = 0
+        fpsWindowStartMs = 0L
     }
 }

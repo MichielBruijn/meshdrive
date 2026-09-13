@@ -22,9 +22,11 @@
         android:theme="@style/Theme.RcVehicle"
         android:usesCleartextTraffic="true">
 
+        <!-- Mode picker: two buttons, no reason to ever be sideways. -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

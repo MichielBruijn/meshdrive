@@ -32,7 +32,11 @@ class VehicleForegroundService : Service() {
     private val channelId = "vehicle_service"
 
     private val servoBridge = ServoBridge()
-    private val usbServoBridge = UsbServoBridge(this)
+
+    // Public (not just `activeLink`): firmware updates need this specific transport
+    // regardless of which link is currently relaying joystick commands - USB is a
+    // physical cable, not a "connect via" choice like wifi is.
+    val usbServoBridge = UsbServoBridge(this)
     private lateinit var networkBinder: EspWifiNetworkBinder
 
     var activeLink: ServoLink? = null
@@ -75,7 +79,7 @@ class VehicleForegroundService : Service() {
     /**
      * Wifi fallback: call once the user has entered/confirmed the ESP32's IP.
      * Cancels any previous network observation first - without this, tapping
-     * "Verbinden" more than once left earlier requestNetwork() registrations running
+     * "Connect" more than once left earlier requestNetwork() registrations running
      * alongside the new one, each independently restarting ServoBridge's websocket
      * whenever its own onAvailable fired, which looked like random servo jitter.
      */

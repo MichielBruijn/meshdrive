@@ -30,4 +30,12 @@
         android:layout_height="wrap_content"
         android:text="@string/mode_vehicle" />
 
+    <TextView
+        android:id="@+id/textAppVersion"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="32dp"
+        android:textSize="12sp"
+        android:alpha="0.6" />
+
 </LinearLayout>

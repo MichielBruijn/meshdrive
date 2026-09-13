@@ -15,21 +15,22 @@
         android:layout_height="match_parent"
         android:layout_gravity="center" />
 
-    <!-- Steering, bottom-left. Only x is used. -->
-    <nu.bruijn.rcvehicle.controller.JoystickView
-        android:id="@+id/joystickSteer"
-        android:layout_width="170dp"
-        android:layout_height="170dp"
-        android:layout_gravity="bottom|start"
-        android:layout_margin="20dp" />
+    <!-- Steering, left edge, vertically centered: horizontal slider, left/right only. -->
+    <nu.bruijn.rcvehicle.controller.SliderView
+        android:id="@+id/sliderSteer"
+        android:layout_width="240dp"
+        android:layout_height="100dp"
+        android:layout_gravity="center_vertical|start"
+        android:layout_marginStart="20dp" />
 
-    <!-- Throttle, bottom-right. Only y is used. -->
-    <nu.bruijn.rcvehicle.controller.JoystickView
-        android:id="@+id/joystickThrottle"
-        android:layout_width="170dp"
-        android:layout_height="170dp"
-        android:layout_gravity="bottom|end"
-        android:layout_margin="20dp" />
+    <!-- Throttle, vertically centered, nudged in from the right edge for easier
+         thumb reach: vertical slider, forward/backward only. -->
+    <nu.bruijn.rcvehicle.controller.SliderView
+        android:id="@+id/sliderThrottle"
+        android:layout_width="100dp"
+        android:layout_height="240dp"
+        android:layout_gravity="center_vertical|end"
+        android:layout_marginEnd="50dp" />
 
     <Button
         android:id="@+id/buttonStop"
@@ -39,14 +40,60 @@
         android:layout_marginBottom="24dp"
         android:text="@string/controller_stop" />
 
-    <CheckBox
-        android:id="@+id/checkSteerLimit"
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|center_horizontal"
         android:layout_marginTop="12dp"
-        android:textColor="@android:color/white"
-        android:text="@string/controller_steer_limit" />
+        android:orientation="vertical"
+        android:gravity="center_horizontal">
+
+        <CheckBox
+            android:id="@+id/checkSteerLimit"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@android:color/white"
+            android:text="@string/controller_steer_limit" />
+
+        <!-- Video quality: manual Low/Med/High picks, or Auto to let the app step
+             down/up from decoded FPS - see ControllerDriveActivity's auto-quality
+             loop. Manual buttons turn Auto off. -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <Button
+                android:id="@+id/buttonQualityLow"
+                style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/controller_quality_low" />
+
+            <Button
+                android:id="@+id/buttonQualityMedium"
+                style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/controller_quality_medium" />
+
+            <Button
+                android:id="@+id/buttonQualityHigh"
+                style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/controller_quality_high" />
+
+            <CheckBox
+                android:id="@+id/checkAutoQuality"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:textColor="@android:color/white"
+                android:text="@string/controller_quality_auto" />
+        </LinearLayout>
+    </LinearLayout>
 
     <TextView
         android:id="@+id/textRtcLog"
@@ -58,5 +105,17 @@
         android:textSize="10sp"
         android:textColor="@android:color/white"
         android:maxLines="4" />
+
+    <!-- Debug overlay: decoded frame rate and control round-trip latency. -->
+    <TextView
+        android:id="@+id/textDebugOverlay"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_margin="8dp"
+        android:fontFamily="monospace"
+        android:textSize="12sp"
+        android:textColor="@android:color/white"
+        android:text="FPS: -- | Latency: -- ms" />
 
 </FrameLayout>
