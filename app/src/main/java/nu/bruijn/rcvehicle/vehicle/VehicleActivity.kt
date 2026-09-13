@@ -148,7 +148,11 @@ class VehicleActivity : AppCompatActivity() {
         }
         locationListener = listener
         try {
-            manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, listener, Looper.getMainLooper())
+            // minTime is a floor, not a guarantee - most GNSS chips still cap
+            // themselves around 1Hz regardless of what's requested here, but
+            // asking for 1000ms ourselves was needlessly capping the ones that
+            // can do better. 200ms just stops being the bottleneck.
+            manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 200L, 0f, listener, Looper.getMainLooper())
         } catch (_: Exception) {
             // No GPS provider on this device/emulator - nothing to fall back to
             // for a moving-vehicle speed reading, network location is far too
