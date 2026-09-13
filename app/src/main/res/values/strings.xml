@@ -10,7 +10,7 @@
     <string name="vehicle_check_update">Check for update</string>
     <string name="vehicle_install_update">Install update</string>
     <string name="vehicle_wifi_fallback_title">Or via WiFi (fallback):</string>
-    <string name="vehicle_esp_ip_hint">ESP32 IP address</string>
+    <string name="vehicle_esp_ip_hint">ESP32 IP address or servotester.local</string>
     <string name="vehicle_connect">Connect</string>
     <string name="vehicle_status_idle">Not connected yet</string>
     <string name="vehicle_debug_steer">Steer</string>
