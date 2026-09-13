@@ -65,6 +65,8 @@ class VehicleActivity : AppCompatActivity() {
 
     companion object {
         private const val YGGDRASIL_PACKAGE = "eu.neilalexander.yggdrasil"
+        private const val MAX_SPEED_FOR_FULL_STEER_LIMIT_KMH = 20f
+        private const val MAX_STEER_REDUCTION_FRACTION = 0.6f
     }
 
     private var service: VehicleForegroundService? = null
@@ -77,17 +79,52 @@ class VehicleActivity : AppCompatActivity() {
     private var videoStarted = false
     private var lastRemoteControlAtMs = 0L
 
-    // GPS/speed overlay (controller's debug checkbox, ControlFrame.TelemetryEnable) -
-    // only active while the controller actually wants it, so this phone isn't
-    // burning battery on location fixes nobody's looking at.
+    // GPS is shared by two independent features - the debug speed/GPS overlay
+    // (telemetryEnabled, sent to the controller) and the speed-based steering
+    // limiter below (speedLimitEnabled, used locally, nothing to do with the
+    // overlay being on) - either one alone should start it, and it only stops once
+    // neither wants it, so this phone isn't burning battery on fixes nobody needs.
     private var locationManager: LocationManager? = null
     private var locationListener: LocationListener? = null
 
+    // Written from the control-link receive loop (background), read from the same
+    // place plus the LocationListener callback (main thread) - @Volatile so a
+    // toggle is never missed/stale across those threads.
+    @Volatile private var telemetryEnabled = false
+    @Volatile private var speedLimitEnabled = false
+
+    // Read from the control-handling coroutine (Dispatchers.IO), written from the
+    // LocationListener callback (main thread, per requestLocationUpdates below).
+    @Volatile private var currentSpeedKmh = 0f
+
     private fun setTelemetryEnabled(enabled: Boolean) {
+        telemetryEnabled = enabled
+        updateLocationTracking()
+    }
+
+    /**
+     * Speed-based steering limit (replaces the servo tester's own throttle-position-
+     * based one, "poor man's" version, since throttle position is a weak proxy for
+     * actual speed - e.g. full throttle from a dead stop shouldn't limit steering
+     * the way full throttle already at speed should). See applySpeedSteerLimit()
+     * for the actual math and setSteerLimitEnabled(false) below for why the
+     * firmware's own version needs to stay off while this is active - running both
+     * would double-limit.
+     */
+    private fun setSpeedLimitEnabled(enabled: Boolean) {
+        speedLimitEnabled = enabled
+        updateLocationTracking()
+    }
+
+    private fun updateLocationTracking() {
         val manager = locationManager ?: (getSystemService(Context.LOCATION_SERVICE) as LocationManager).also { locationManager = it }
-        locationListener?.let { manager.removeUpdates(it) }
-        locationListener = null
-        if (!enabled) return
+        if (!telemetryEnabled && !speedLimitEnabled) {
+            locationListener?.let { manager.removeUpdates(it) }
+            locationListener = null
+            currentSpeedKmh = 0f
+            return
+        }
+        if (locationListener != null) return // already tracking, nothing to do
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) !=
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -97,8 +134,12 @@ class VehicleActivity : AppCompatActivity() {
             // location.speed is m/s and only meaningful once the provider actually
             // has a fix with a real velocity estimate (GPS does once moving) - a
             // stale/first fix can report 0 even while moving, but that just shows
-            // as "0 km/h" for a moment rather than anything misleading.
-            controlLink.sendTelemetry(true, location.speed * 3.6f, location.latitude, location.longitude)
+            // as "0 km/h"/no limiting for a moment rather than anything misleading.
+            val speedKmh = location.speed * 3.6f
+            currentSpeedKmh = speedKmh
+            if (telemetryEnabled) {
+                controlLink.sendTelemetry(true, speedKmh, location.latitude, location.longitude)
+            }
         }
         locationListener = listener
         try {
@@ -108,6 +149,19 @@ class VehicleActivity : AppCompatActivity() {
             // for a moving-vehicle speed reading, network location is far too
             // coarse/slow for that.
         }
+    }
+
+    /**
+     * Scales steer deflection down as speed increases, symmetric around center -
+     * the app-side, real-speed equivalent of the firmware's own
+     * applySteerOutput()/STEERING_LIMIT. The two constants below are a starting
+     * point (full steering below ~walking pace, keeping 40% of range at/above a
+     * brisk 20 km/h) - tune freely, there's nothing else tied to these numbers.
+     */
+    private fun applySpeedSteerLimit(steer: Float, speedKmh: Float): Float {
+        val speedFraction = (speedKmh / MAX_SPEED_FOR_FULL_STEER_LIMIT_KMH).coerceIn(0f, 1f)
+        val scale = 1f - speedFraction * MAX_STEER_REDUCTION_FRACTION
+        return steer * scale
     }
 
     // Set once onServiceConnected below has a service to attach it to - see setUsbButtonConnected() in onCreate.
@@ -297,21 +351,25 @@ class VehicleActivity : AppCompatActivity() {
                             is ControlFrame.Decoded.Control -> {
                                 log("control #${decoded.seq}: steer=${decoded.steer} throttle=${decoded.throttle}")
                                 lastRemoteControlAtMs = System.currentTimeMillis()
-                                service?.activeLink?.sendControl(decoded.steer, decoded.throttle)
+                                val steer = if (speedLimitEnabled) applySpeedSteerLimit(decoded.steer, currentSpeedKmh) else decoded.steer
+                                service?.activeLink?.sendControl(steer, decoded.throttle)
                                 // Sliders track whatever is actually being sent to the
                                 // servo, remote or local - a live readout, not just a
                                 // local debug input (they're locked out from sending
                                 // while a remote controller is active anyway, see the
                                 // tick loop below, so moving them here doesn't fight it).
                                 runOnUiThread {
-                                    seekSteer.progress = ((decoded.steer + 1f) * 100).toInt()
+                                    seekSteer.progress = ((steer + 1f) * 100).toInt()
                                     seekThrottle.progress = ((decoded.throttle + 1f) * 100).toInt()
                                 }
                                 maybeStartVideo(senderAddress, ::log)
                             }
                             is ControlFrame.Decoded.SteerLimit -> {
-                                log("steer limit: ${decoded.enabled}")
-                                service?.activeLink?.setSteerLimitEnabled(decoded.enabled)
+                                log("steer limit (speed-based): ${decoded.enabled}")
+                                setSpeedLimitEnabled(decoded.enabled)
+                                // Always keep the firmware's own throttle-position-based
+                                // limiter off - it would double-limit alongside this one.
+                                service?.activeLink?.setSteerLimitEnabled(false)
                             }
                             is ControlFrame.Decoded.Quality -> {
                                 val quality = VideoQuality.fromIndex(decoded.presetIndex)
