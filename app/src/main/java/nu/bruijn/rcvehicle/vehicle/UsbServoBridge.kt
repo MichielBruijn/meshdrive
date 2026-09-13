@@ -103,11 +103,23 @@ class UsbServoBridge(
         }
     }
 
+    // Serializes writes to the port: sendControl() (called from the UI tick loop's
+    // thread) and the failsafe watchdog (its own coroutine) can both call send()
+    // at close to the same time. Unlike ServoBridge's webSocket.send() - already
+    // thread-safe/queued internally by OkHttp - UsbSerialPort.write() is a raw
+    // blocking call with no such guarantee, so two overlapping writes from
+    // different threads could interleave their bytes on the wire. That showed up
+    // as visibly jittery servo movement (corrupted/rejected PosJ lines) before
+    // this lock was added.
+    private val writeLock = Any()
+
     override fun send(channel: Int, us: Int) {
         val p = port ?: return
         scope.launch {
             try {
-                p.write("PosJ$channel=$us\n".toByteArray(), 200)
+                synchronized(writeLock) {
+                    p.write("PosJ$channel=$us\n".toByteArray(), 200)
+                }
             } catch (_: Exception) {
                 // best-effort, same reasoning as the wifi path - a dropped write
                 // is fine, the failsafe/next tick handles it

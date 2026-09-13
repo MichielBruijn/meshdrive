@@ -54,6 +54,7 @@ class VehicleActivity : AppCompatActivity() {
     private val controlLink = ControlLink()
     private val videoSender = VideoSender(this)
     private var videoStarted = false
+    private var lastRemoteControlAtMs = 0L
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -120,6 +121,7 @@ class VehicleActivity : AppCompatActivity() {
                 try {
                     controlLink.listen(ControlLink.PORT) { decoded, senderAddress ->
                         log("control #${decoded.seq}: steer=${decoded.steer} throttle=${decoded.throttle}")
+                        lastRemoteControlAtMs = System.currentTimeMillis()
                         service?.activeLink?.sendControl(decoded.steer, decoded.throttle)
                         maybeStartVideo(senderAddress, ::log)
                     }
@@ -147,11 +149,20 @@ class VehicleActivity : AppCompatActivity() {
         // don't fire at a guaranteed steady rate, so gaps over 300ms kept tripping
         // ServoBridge's own failsafe mid-drag, snapping to center and back - that's the
         // jitter. A steady heartbeat is what the failsafe is designed to key off.
+        //
+        // Skipped entirely while a remote controller has sent something in the last
+        // second: these local sliders sit at rest (0,0) whenever nobody is touching
+        // them, and kept firing regardless - racing with the fase-4 UDP relay below
+        // and stomping on its actual values every ~30ms. That was a second, separate
+        // cause of jittery servo movement (this one visible even while the remote
+        // controller held perfectly still), on top of the USB write-ordering one.
         tickRunnable = object : Runnable {
             override fun run() {
-                val steer = (seekSteer.progress - 100) / 100f
-                val throttle = (seekThrottle.progress - 100) / 100f
-                service?.activeLink?.sendControl(steer, throttle)
+                if (System.currentTimeMillis() - lastRemoteControlAtMs > 1000) {
+                    val steer = (seekSteer.progress - 100) / 100f
+                    val throttle = (seekThrottle.progress - 100) / 100f
+                    service?.activeLink?.sendControl(steer, throttle)
+                }
                 tickHandler.postDelayed(this, 30) // ~33Hz, matching the browser UI's own throttle rate
             }
         }
