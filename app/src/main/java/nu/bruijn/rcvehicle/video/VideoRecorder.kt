@@ -78,12 +78,16 @@ class VideoRecorder {
         if (samples.isEmpty()) return
         val presentationTimeUs = System.nanoTime() / 1000 - startTimeUs
         for (sample in samples) {
-            val buffer = ByteBuffer.allocate(4 + sample.size)
-            buffer.putInt(sample.size) // AVCC: big-endian NAL length prefix, not a start code
-            buffer.put(sample)
-            buffer.flip()
+            // MediaMuxer.writeSampleData() prepends its own 4-byte AVCC length prefix
+            // to whatever bytes it's given for an AVC track - confirmed on real
+            // hardware (hex-dumped the actual mdat bytes) as a real, silent behavior,
+            // not just an assumption. Wrapping the NAL in our own length prefix first,
+            // the way this used to work, produced a NAL preceded by TWO nested length
+            // fields instead of one - every sample in every recording was unparseable
+            // because of it. Just hand over the bare NAL (no start code, no prefix).
+            val buffer = ByteBuffer.wrap(sample)
             val info = MediaCodec.BufferInfo().apply {
-                set(0, buffer.remaining(), presentationTimeUs, if (isKeyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
+                set(0, sample.size, presentationTimeUs, if (isKeyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
             }
             s.writeSample(videoTrackIndex, buffer, info)
         }
