@@ -138,6 +138,21 @@ class VideoSender(private val context: Context) {
         openPipeline(quality)
     }
 
+    private var useFrontCamera = false
+
+    /**
+     * "Rear view" toggle (ControllerDriveActivity): switches which of the phone's two
+     * cameras streams video. Not a selfie mirror - the raw sensor image is sent as-is
+     * either way (see openCamera()'s dynamic sensorOrientation lookup), which is the
+     * correct behavior for an actual backward-facing view rather than a flipped one.
+     */
+    fun switchCamera(useFront: Boolean) {
+        if (useFront == useFrontCamera && cameraDevice != null) return
+        useFrontCamera = useFront
+        closePipeline()
+        openPipeline(currentQuality)
+    }
+
     private fun openPipeline(quality: VideoQuality) {
         currentQuality = quality
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, quality.width, quality.height).apply {
@@ -198,9 +213,9 @@ class VideoSender(private val context: Context) {
 
     private fun openCamera(surface: Surface) {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val desiredFacing = if (useFrontCamera) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
         val cameraId = manager.cameraIdList.firstOrNull { id ->
-            manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) ==
-                CameraCharacteristics.LENS_FACING_BACK
+            manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == desiredFacing
         } ?: manager.cameraIdList.firstOrNull() ?: run {
             onError?.invoke("no camera found")
             return

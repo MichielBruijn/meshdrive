@@ -18,11 +18,14 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import android.view.View
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.control.ControlLink
+import nu.bruijn.rcvehicle.mode.ModePrefs
 import nu.bruijn.rcvehicle.video.VideoPacket
 import nu.bruijn.rcvehicle.video.VideoQuality
 import nu.bruijn.rcvehicle.video.VideoReceiver
@@ -85,6 +88,14 @@ class ControllerDriveActivity : AppCompatActivity() {
     private var lastFps = -1f
     private var lastLatencyMs = -1L
 
+    // Connectivity liveness (always visible, not debug - see textConnectionWarning's doc):
+    // lastPongAtMs is 0 until the very first reply, so "never connected" and "was
+    // connected, now silent" read differently. Yggdrasil's own app dropping its VPN when
+    // wifi turns off, with no automatic mobile-data fallback on some phones, is exactly
+    // the kind of silent failure this needs to catch.
+    private var lastPongAtMs = 0L
+    private var connectStartedAtMs = 0L
+
     // Video quality: currentQualityIndex is what the vehicle is actually encoding
     // at (VideoQuality's ordinal); autoQuality toggles the FPS-driven step-down/
     // step-up loop in videoReceiver.onFps below. Manual button taps turn autoQuality
@@ -116,6 +127,16 @@ class ControllerDriveActivity : AppCompatActivity() {
         val videoContainer = findViewById<FrameLayout>(R.id.videoContainer)
         val textureVideo = findViewById<TextureView>(R.id.textureVideo)
         val textDebugOverlay = findViewById<TextView>(R.id.textDebugOverlay)
+        val textConnectionWarning = findViewById<TextView>(R.id.textConnectionWarning)
+
+        // Verbose log + FPS/latency numbers are diagnostic detail, hidden unless "Debug
+        // mode" is on (MainActivity) - textConnectionWarning below stays visible
+        // regardless, that one's a safety signal, not a diagnostic.
+        lifecycleScope.launch {
+            val debugEnabled = ModePrefs(applicationContext).debugEnabled.first()
+            logView.visibility = if (debugEnabled) View.VISIBLE else View.GONE
+            textDebugOverlay.visibility = if (debugEnabled) View.VISIBLE else View.GONE
+        }
 
         fun log(line: String) = runOnUiThread {
             Log.d("RCDebug", line)
@@ -202,6 +223,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         if (address.isNullOrEmpty()) {
             log("no vehicle address given")
         } else {
+            connectStartedAtMs = System.currentTimeMillis()
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     controlLink.connect(address, ControlLink.PORT)
@@ -209,6 +231,7 @@ class ControllerDriveActivity : AppCompatActivity() {
                     controlLink.startPing { rtt ->
                         runOnUiThread {
                             lastLatencyMs = rtt
+                            lastPongAtMs = System.currentTimeMillis()
                             updateDebugOverlay()
                         }
                     }
@@ -237,10 +260,8 @@ class ControllerDriveActivity : AppCompatActivity() {
             setQuality(VideoQuality.HIGH.ordinal)
         }
 
-        findViewById<Button>(R.id.buttonStop).setOnClickListener {
-            steerX = 0f
-            throttleY = 0f
-            controlLink.send(0f, 0f, seq++)
+        findViewById<CheckBox>(R.id.checkRearView).setOnCheckedChangeListener { _, checked ->
+            controlLink.sendCamera(checked)
         }
 
         findViewById<SliderView>(R.id.sliderSteer).apply {
@@ -253,11 +274,28 @@ class ControllerDriveActivity : AppCompatActivity() {
             onMove = { y -> throttleY = -y }
         }
 
+        var lastWarningText: String? = null
+
         // Fixed ~33Hz tick, same reasoning as the vehicle-side debug sliders: a
         // steady heartbeat is what the vehicle-side failsafe is designed to key off.
         tickRunnable = object : Runnable {
             override fun run() {
                 controlLink.send(steerX, throttleY, seq++)
+
+                if (!address.isNullOrEmpty()) {
+                    val now = System.currentTimeMillis()
+                    val warning = when {
+                        lastPongAtMs == 0L && now - connectStartedAtMs > 5000 -> "⚠ No connection to vehicle"
+                        lastPongAtMs != 0L && now - lastPongAtMs > 2000 -> "⚠ Vehicle connection lost (${(now - lastPongAtMs) / 1000}s)"
+                        else -> null
+                    }
+                    if (warning != lastWarningText) {
+                        lastWarningText = warning
+                        textConnectionWarning.text = warning ?: ""
+                        textConnectionWarning.visibility = if (warning != null) View.VISIBLE else View.GONE
+                    }
+                }
+
                 tickHandler.postDelayed(this, 30)
             }
         }

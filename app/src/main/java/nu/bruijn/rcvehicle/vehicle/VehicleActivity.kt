@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -22,15 +23,19 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.common.QrCode
 import nu.bruijn.rcvehicle.common.YggdrasilAddress
 import nu.bruijn.rcvehicle.control.ControlFrame
 import nu.bruijn.rcvehicle.control.ControlLink
+import nu.bruijn.rcvehicle.mode.ModePrefs
 import nu.bruijn.rcvehicle.video.VideoPacket
 import nu.bruijn.rcvehicle.video.VideoQuality
 import nu.bruijn.rcvehicle.video.VideoSender
@@ -68,6 +73,10 @@ class VehicleActivity : AppCompatActivity() {
     // Set once onServiceConnected below has a service to attach it to - see setUsbButtonConnected() in onCreate.
     private var onUsbConnectedChanged: ((Boolean) -> Unit)? = null
 
+    // Set in onCreate - re-run from onResume so coming back from actually opening
+    // Yggdrasil (buttonOpenYggdrasil) picks up the result automatically.
+    private var recheckYggdrasil: (() -> Unit)? = null
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val localBinder = binder as VehicleForegroundService.LocalBinder
@@ -79,11 +88,29 @@ class VehicleActivity : AppCompatActivity() {
             service?.usbServoBridge?.onConnected = { connected ->
                 runOnUiThread { onUsbConnectedChanged?.invoke(connected) }
             }
+            // No reason to make the driver tap "Connect via USB cable" themselves - if
+            // the ESP32 is already plugged in when this screen opens (the common case:
+            // the manifest's USB_DEVICE_ATTACHED filter already launched the mode picker
+            // for exactly this reason), just connect immediately. usbServoBridge.start()
+            // already handles "no device found" gracefully, so this is harmless if
+            // nothing's plugged in yet.
+            service?.connectUsb()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             service = null
             bound = false
+        }
+    }
+
+    // Catches the ESP32 being plugged in WHILE already on this screen - the manifest's
+    // USB_DEVICE_ATTACHED filter only launches a fresh MainActivity, which doesn't help
+    // if VehicleActivity is already in front.
+    private val usbAttachReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+                service?.connectUsb()
+            }
         }
     }
 
@@ -97,6 +124,22 @@ class VehicleActivity : AppCompatActivity() {
         // ERROR_CAMERA_DISABLED - after a delay matching the screen timeout).
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_vehicle)
+
+        ContextCompat.registerReceiver(
+            this,
+            usbAttachReceiver,
+            android.content.IntentFilter(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+
+        // Debug mode (MainActivity's checkbox) hides raw addresses/logs/the local debug
+        // sliders/the wifi fallback - none of that is needed for normal day-to-day driving,
+        // it's here for diagnosing problems. A one-shot read is enough: changing the toggle
+        // requires going back to the mode picker anyway, there's no live-update need.
+        val debugSection = findViewById<View>(R.id.debugSection)
+        lifecycleScope.launch {
+            debugSection.visibility = if (ModePrefs(applicationContext).debugEnabled.first()) View.VISIBLE else View.GONE
+        }
 
         val editIp = findViewById<EditText>(R.id.editEspIp)
         val seekSteer = findViewById<SeekBar>(R.id.seekSteer)
@@ -137,29 +180,69 @@ class VehicleActivity : AppCompatActivity() {
         }
 
         val imageQr = findViewById<ImageView>(R.id.imageYggdrasilQr)
-        lifecycleScope.launch {
-            val address = withContext(Dispatchers.IO) { YggdrasilAddress.detect() }
-            if (address != null) {
-                textOwnAddress.text = "Own Yggdrasil address: $address"
-                imageQr.setImageBitmap(QrCode.encode(address))
-            } else {
-                textOwnAddress.text = "Own Yggdrasil address: not found - opening Yggdrasil app…"
-                // There's no public API to enable Yggdrasil's VPN from another app
-                // (its own state broadcast is LocalBroadcastManager-only, checked in
-                // its source - not visible outside its own process), so the best
-                // available "automatic" behavior is bringing its own UI to the
-                // front for a one-tap enable, instead of making the user go find it
-                // themselves in the app drawer.
-                packageManager.getLaunchIntentForPackage(YGGDRASIL_PACKAGE)?.let { launchIntent ->
-                    startActivity(launchIntent)
+        val textYggdrasilStatus = findViewById<TextView>(R.id.textYggdrasilStatus)
+        val buttonOpenYggdrasil = findViewById<Button>(R.id.buttonOpenYggdrasil)
+
+        // Checks (not auto-launches) - forcing an app switch to Yggdrasil/F-Droid every
+        // single time this screen opened, e.g. right after a reboot before Yggdrasil was
+        // back up yet, was disruptive during repeated testing. Now just explains the
+        // situation and offers a button; re-run from onResume (recheckYggdrasil below) so
+        // coming back from actually opening Yggdrasil picks up the result without needing
+        // to relaunch this screen.
+        fun checkYggdrasil() {
+            lifecycleScope.launch {
+                // getLaunchIntentForPackage() returns null both when Yggdrasil isn't running
+                // AND when it isn't installed at all - checked explicitly so an actually-
+                // missing install gets a real prompt (F-Droid, where the plan's pairing step
+                // assumes it's distributed) instead of just repeating "not found" forever.
+                if (!isPackageInstalled(YGGDRASIL_PACKAGE)) {
+                    textYggdrasilStatus.text = "Yggdrasil app not installed"
+                    buttonOpenYggdrasil.text = "Install from F-Droid"
+                    buttonOpenYggdrasil.visibility = View.VISIBLE
+                    buttonOpenYggdrasil.setOnClickListener {
+                        runCatching {
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://f-droid.org/packages/$YGGDRASIL_PACKAGE/")))
+                        }
+                    }
+                    return@launch
+                }
+                val address = withContext(Dispatchers.IO) { YggdrasilAddress.detect() }
+                if (address != null) {
+                    textOwnAddress.text = "Own Yggdrasil address: $address"
+                    textYggdrasilStatus.text = ""
+                    buttonOpenYggdrasil.visibility = View.GONE
+                    imageQr.setImageBitmap(QrCode.encode(address))
+                } else {
+                    // There's no public API to enable Yggdrasil's VPN from another app
+                    // (its own state broadcast is LocalBroadcastManager-only, checked in
+                    // its source - not visible outside its own process), so a button to
+                    // bring its own UI to the front is the best available shortcut.
+                    textYggdrasilStatus.text = "Yggdrasil not running - open it and enable the VPN"
+                    buttonOpenYggdrasil.text = getString(R.string.vehicle_open_yggdrasil)
+                    buttonOpenYggdrasil.visibility = View.VISIBLE
+                    buttonOpenYggdrasil.setOnClickListener {
+                        packageManager.getLaunchIntentForPackage(YGGDRASIL_PACKAGE)?.let { startActivity(it) }
+                    }
                 }
             }
         }
+        recheckYggdrasil = ::checkYggdrasil
+        checkYggdrasil()
 
         videoSender.onError = { msg -> log("video: $msg") }
 
+        val buttonListen = findViewById<Button>(R.id.buttonListen)
+        val defaultListenButtonTint = buttonListen.backgroundTintList
+        val defaultListenButtonText = buttonListen.text
+
+        fun setListenButtonUp(up: Boolean) {
+            buttonListen.backgroundTintList = if (up) usbConnectedTint else defaultListenButtonTint
+            buttonListen.text = if (up) getString(R.string.vehicle_listening) else defaultListenButtonText
+        }
+
         fun startListening() {
             controlLink.close()
+            setListenButtonUp(false)
             logView.text = ""
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
@@ -189,12 +272,17 @@ class VehicleActivity : AppCompatActivity() {
                                 log("quality: ${quality.label}")
                                 videoSender.setQuality(quality)
                             }
+                            is ControlFrame.Decoded.Camera -> {
+                                log("camera: ${if (decoded.useFront) "front (rear view)" else "back"}")
+                                videoSender.switchCamera(decoded.useFront)
+                            }
                             is ControlFrame.Decoded.Ping, is ControlFrame.Decoded.Pong -> {
                                 // Handled transparently inside ControlLink.listen() - never reaches here.
                             }
                         }
                     }
                     log("listening for UDP control on port ${ControlLink.PORT}")
+                    runOnUiThread { setListenButtonUp(true) }
                 } catch (e: Exception) {
                     log("listen failed: ${e::class.simpleName}: ${e.message}")
                 }
@@ -207,7 +295,7 @@ class VehicleActivity : AppCompatActivity() {
         // link). The button stays wired to the same function as a manual
         // restart/clear-log, e.g. after fiddling with the ESP32 connection.
         startListening()
-        findViewById<Button>(R.id.buttonListen).setOnClickListener { startListening() }
+        buttonListen.setOnClickListener { startListening() }
 
         val listener = object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {}
@@ -233,12 +321,30 @@ class VehicleActivity : AppCompatActivity() {
         // and stomping on its actual values every ~30ms. That was a second, separate
         // cause of jittery servo movement (this one visible even while the remote
         // controller held perfectly still), on top of the USB write-ordering one.
+        val textLinkStatus = findViewById<TextView>(R.id.textLinkStatus)
+        var lastLinkStatusText: String? = null
+
         tickRunnable = object : Runnable {
             override fun run() {
                 if (System.currentTimeMillis() - lastRemoteControlAtMs > 1000) {
                     val steer = (seekSteer.progress - 100) / 100f
                     val throttle = (seekThrottle.progress - 100) / 100f
                     service?.activeLink?.sendControl(steer, throttle)
+                }
+                // Liveness indicator (Yggdrasil's own app dropping its VPN when wifi turns
+                // off, with no automatic fallback to mobile data on some phones, is exactly
+                // the kind of silent failure this needs to surface) - a controller that was
+                // never seen reads differently from one that WAS driving and then went quiet,
+                // since the latter usually means the link just died, not "not started yet".
+                val sinceLastControl = System.currentTimeMillis() - lastRemoteControlAtMs
+                val text = when {
+                    lastRemoteControlAtMs == 0L -> "Waiting for controller…"
+                    sinceLastControl > 2000 -> "⚠ Controller signal lost (${sinceLastControl / 1000}s)"
+                    else -> "Controller connected"
+                }
+                if (text != lastLinkStatusText) {
+                    lastLinkStatusText = text
+                    textLinkStatus.text = text
                 }
                 tickHandler.postDelayed(this, 30) // ~33Hz, matching the browser UI's own throttle rate
             }
@@ -251,11 +357,11 @@ class VehicleActivity : AppCompatActivity() {
     }
 
     /**
-     * "Check for update"/"Install update" over the same USB cable as normal driving -
-     * see UsbServoBridge.checkFirmwareVersion()/flashFirmware() and the firmware's
-     * own usbFirmwareUpdate(). Only works while connected via USB (checkUsb needs
-     * the board to answer "GETVERSION"), which is why this only checks
-     * service?.usbServoBridge specifically, not whatever activeLink happens to be.
+     * "Check for update" reads the running version over the same USB cable as normal
+     * driving (UsbServoBridge.checkFirmwareVersion(), needs the board to answer
+     * "GETVERSION" - which is why this checks service?.usbServoBridge specifically,
+     * not whatever activeLink happens to be). "Install update" goes over wifi instead
+     * (WifiFirmwareUpdater) - see its doc for why the two use different transports.
      */
     private fun setUpFirmwareUpdateUi() {
         val buttonCheckUpdate = findViewById<Button>(R.id.buttonCheckUpdate)
@@ -293,6 +399,12 @@ class VehicleActivity : AppCompatActivity() {
             }
         }
 
+        // Installing goes over wifi (WifiFirmwareUpdater), not the USB cable checking used
+        // above - see its doc for why: the raw USB-serial link corrupted this specific bulk
+        // transfer on every attempt, confirmed via an MD5 mismatch even after a full,
+        // uninterrupted transfer, despite several rounds of fixes. Requires the phone to
+        // already be joined to the ESP32's own wifi network (same one-time manual join the
+        // wifi-fallback control path above needs).
         buttonInstallUpdate.setOnClickListener {
             val release = pendingRelease ?: return@setOnClickListener
             buttonInstallUpdate.isEnabled = false
@@ -306,19 +418,25 @@ class VehicleActivity : AppCompatActivity() {
                     buttonCheckUpdate.isEnabled = true
                     return@launch
                 }
-                textUpdateStatus.text = "Flashing 0%…"
-                val (success, message) = suspendCancellableCoroutine<Pair<Boolean, String>> { cont ->
-                    val bridge = service?.usbServoBridge
-                    if (bridge == null) {
-                        cont.resume(false to "not connected")
-                    } else {
-                        bridge.flashFirmware(
-                            bytes,
-                            onProgress = { written, total ->
-                                runOnUiThread { textUpdateStatus.text = "Flashing ${written * 100 / total}%…" }
-                            },
-                            onResult = { ok, msg -> cont.resume(ok to msg) },
-                        )
+                textUpdateStatus.text = "Joining ESP32 wifi…"
+                val network = withContext(Dispatchers.IO) {
+                    withTimeoutOrNull(15_000) {
+                        EspWifiNetworkBinder(applicationContext).observe()
+                            .filterIsInstance<EspWifiNetworkBinder.State.Available>()
+                            .first().network
+                    }
+                }
+                if (network == null) {
+                    textUpdateStatus.text = "Could not reach ESP32 wifi - join its network first (see fallback section)"
+                    buttonInstallUpdate.isEnabled = true
+                    buttonCheckUpdate.isEnabled = true
+                    return@launch
+                }
+                val espIp = findViewById<EditText>(R.id.editEspIp).text.toString().trim().ifEmpty { "192.168.4.1" }
+                textUpdateStatus.text = "Uploading 0%…"
+                val (success, message) = withContext(Dispatchers.IO) {
+                    WifiFirmwareUpdater().upload(network, espIp, bytes) { written, total ->
+                        runOnUiThread { textUpdateStatus.text = "Uploading ${written * 100 / total}%…" }
                     }
                 }
                 textUpdateStatus.text = if (success) "v${release.version} installed - $message" else "Update failed: $message"
@@ -331,6 +449,9 @@ class VehicleActivity : AppCompatActivity() {
             }
         }
     }
+
+    private fun isPackageInstalled(packageName: String): Boolean =
+        runCatching { packageManager.getPackageInfo(packageName, 0) }.isSuccess
 
     private fun maybeStartVideo(controllerAddress: InetAddress, log: (String) -> Unit) {
         if (videoStarted) return
@@ -345,7 +466,13 @@ class VehicleActivity : AppCompatActivity() {
         videoSender.start(controllerAddress.hostAddress!!, VideoPacket.PORT)
     }
 
+    override fun onResume() {
+        super.onResume()
+        recheckYggdrasil?.invoke()
+    }
+
     override fun onDestroy() {
+        runCatching { unregisterReceiver(usbAttachReceiver) }
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
         controlLink.close()
         videoSender.stop()

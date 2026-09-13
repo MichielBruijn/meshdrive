@@ -16,6 +16,7 @@ object ControlFrame {
     private const val TYPE_PING: Byte = 0x03
     private const val TYPE_PONG: Byte = 0x04
     private const val TYPE_QUALITY: Byte = 0x05
+    private const val TYPE_CAMERA: Byte = 0x06
     private const val CONTROL_SIZE = 9
     private const val TIMESTAMP_SIZE = 9 // type + long
 
@@ -40,6 +41,9 @@ object ControlFrame {
     /** Controller -> vehicle: switch the video encoder to VideoQuality preset [presetIndex]. */
     fun encodeQuality(presetIndex: Int): ByteArray = byteArrayOf(TYPE_QUALITY, presetIndex.toByte())
 
+    /** Controller -> vehicle: switch which physical camera streams video - "rear view" toggle. */
+    fun encodeCamera(useFront: Boolean): ByteArray = byteArrayOf(TYPE_CAMERA, if (useFront) 1 else 0)
+
     private fun encodeTimestamp(type: Byte, value: Long): ByteArray {
         val bb = ByteBuffer.allocate(TIMESTAMP_SIZE).order(ByteOrder.LITTLE_ENDIAN)
         bb.put(type)
@@ -53,6 +57,7 @@ object ControlFrame {
         data class Ping(val sentAtMs: Long) : Decoded()
         data class Pong(val sentAtMs: Long) : Decoded()
         data class Quality(val presetIndex: Int) : Decoded()
+        data class Camera(val useFront: Boolean) : Decoded()
     }
 
     fun decode(bytes: ByteArray, length: Int): Decoded? {
@@ -82,6 +87,10 @@ object ControlFrame {
             TYPE_QUALITY -> {
                 if (length != 2) return null
                 Decoded.Quality(bytes[1].toInt())
+            }
+            TYPE_CAMERA -> {
+                if (length != 2) return null
+                Decoded.Camera(bytes[1] == 1.toByte())
             }
             else -> null
         }

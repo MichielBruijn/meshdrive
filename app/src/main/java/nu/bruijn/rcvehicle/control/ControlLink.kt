@@ -84,6 +84,11 @@ class ControlLink {
         sendBytes(ControlFrame.encodeQuality(presetIndex))
     }
 
+    /** Controller side: ask the vehicle to switch cameras - "rear view" toggle. */
+    fun sendCamera(useFront: Boolean) {
+        sendBytes(ControlFrame.encodeCamera(useFront))
+    }
+
     /**
      * Controller side: periodically pings the vehicle over the same connected socket
      * used by send(), and reports round-trip time (ms) via onRtt as replies come back -

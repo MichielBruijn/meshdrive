@@ -23,132 +23,167 @@
         android:layout_height="wrap_content"
         android:text="@string/vehicle_connect_usb" />
 
-    <!-- Firmware update over the same USB cable - see UsbServoBridge.checkFirmwareVersion()/
-         flashFirmware() and the firmware's own usbFirmwareUpdate(). buttonInstallUpdate stays
-         hidden until a check finds a newer release. -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:orientation="horizontal">
-
-        <Button
-            android:id="@+id/buttonCheckUpdate"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="@string/vehicle_check_update" />
-
-        <Button
-            android:id="@+id/buttonInstallUpdate"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="8dp"
-            android:text="@string/vehicle_install_update"
-            android:visibility="gone" />
-    </LinearLayout>
-
+    <!-- Always visible (not debug) - a safety-relevant liveness indicator, not a diagnostic
+         detail: whether a controller is actively driving right now. -->
     <TextView
-        android:id="@+id/textUpdateStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp" />
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="@string/vehicle_wifi_fallback_title" />
-
-    <EditText
-        android:id="@+id/editEspIp"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="@string/vehicle_esp_ip_hint"
-        android:inputType="text"
-        android:text="192.168.4.1" />
-
-    <Button
-        android:id="@+id/buttonConnect"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="@string/vehicle_connect" />
-
-    <TextView
-        android:id="@+id/textStatus"
+        android:id="@+id/textLinkStatus"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-        android:text="@string/vehicle_status_idle" />
+        android:textStyle="bold" />
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="24dp"
-        android:text="@string/vehicle_debug_steer" />
-    <SeekBar
-        android:id="@+id/seekSteer"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:max="200"
-        android:progress="100" />
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="@string/vehicle_debug_throttle" />
-    <SeekBar
-        android:id="@+id/seekThrottle"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:max="200"
-        android:progress="100" />
-
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:layout_marginVertical="24dp"
-        android:background="#33000000" />
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/vehicle_rtc_title"
-        android:textSize="18sp"
-        android:layout_marginBottom="8dp" />
-
-    <TextView
-        android:id="@+id/textOwnYggdrasilAddress"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textIsSelectable="true"
-        android:text="@string/vehicle_own_address_detecting" />
-
+    <!-- QR code for the controller to pair with - always visible (not debug), it's the
+         normal way to pair a new controller phone. Empty until Yggdrasil actually hands
+         out an address - textYggdrasilStatus/buttonOpenYggdrasil below explain why and
+         offer a manual way to open Yggdrasil, instead of forcing an app switch (a forced
+         switch every time this screen opens, e.g. right after a reboot before Yggdrasil
+         is back up, was disruptive during repeated testing). -->
     <ImageView
         android:id="@+id/imageYggdrasilQr"
         android:layout_width="200dp"
         android:layout_height="200dp"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="16dp"
         android:layout_gravity="center_horizontal"
         android:contentDescription="@string/vehicle_qr_content_description" />
 
-    <Button
-        android:id="@+id/buttonListen"
+    <TextView
+        android:id="@+id/textYggdrasilStatus"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="@string/vehicle_start_listening" />
+        android:gravity="center_horizontal" />
 
-    <TextView
-        android:id="@+id/textRtcLog"
+    <Button
+        android:id="@+id/buttonOpenYggdrasil"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="4dp"
+        android:text="@string/vehicle_open_yggdrasil"
+        android:visibility="gone" />
+
+    <!-- Everything below is diagnostic/rarely-needed: raw Yggdrasil address, verbose control-
+         link log, the local debug steer/throttle sliders, and the wifi fallback (kept only as
+         a backup - the USB-serial path above is the reliable, primary one). Hidden unless
+         "Debug mode" is on (MainActivity) - see VehicleActivity.applyDebugVisibility(). -->
+    <LinearLayout
+        android:id="@+id/debugSection"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:fontFamily="monospace"
-        android:textSize="12sp" />
+        android:orientation="vertical">
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginVertical="24dp"
+            android:background="#33000000" />
+
+        <!-- Firmware update over the same USB cable - see UsbServoBridge.checkFirmwareVersion()/
+             flashFirmware() and the firmware's own usbFirmwareUpdate(). buttonInstallUpdate
+             stays hidden until a check finds a newer release. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/buttonCheckUpdate"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/vehicle_check_update" />
+
+            <Button
+                android:id="@+id/buttonInstallUpdate"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:text="@string/vehicle_install_update"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/textUpdateStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp" />
+
+        <TextView
+            android:id="@+id/textOwnYggdrasilAddress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textIsSelectable="true"
+            android:text="@string/vehicle_own_address_detecting" />
+
+        <Button
+            android:id="@+id/buttonListen"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/vehicle_start_listening" />
+
+        <TextView
+            android:id="@+id/textRtcLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:fontFamily="monospace"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/textStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/vehicle_status_idle" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/vehicle_debug_steer" />
+        <SeekBar
+            android:id="@+id/seekSteer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="200"
+            android:progress="100" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/vehicle_debug_throttle" />
+        <SeekBar
+            android:id="@+id/seekThrottle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="200"
+            android:progress="100" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/vehicle_wifi_fallback_title" />
+
+        <EditText
+            android:id="@+id/editEspIp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/vehicle_esp_ip_hint"
+            android:inputType="text"
+            android:text="192.168.4.1" />
+
+        <Button
+            android:id="@+id/buttonConnect"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/vehicle_connect" />
+
+    </LinearLayout>
 
 </LinearLayout>
 </ScrollView>

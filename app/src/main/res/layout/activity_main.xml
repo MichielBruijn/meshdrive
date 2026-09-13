@@ -7,11 +7,21 @@
     android:padding="32dp">
 
     <TextView
+        android:id="@+id/textAppName"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/app_name"
+        android:textSize="32sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
         android:id="@+id/title"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="@string/mode_picker_title"
-        android:textSize="20sp"
+        android:textSize="16sp"
+        android:alpha="0.7"
         android:layout_marginBottom="24dp" />
 
     <Button
@@ -30,11 +40,21 @@
         android:layout_height="wrap_content"
         android:text="@string/mode_vehicle" />
 
+    <!-- Hidden until textAppVersion below is tapped 7 times - see MainActivity, same
+         convention as Android's own "tap build number to enable developer options". -->
+    <CheckBox
+        android:id="@+id/checkDebugMode"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="32dp"
+        android:text="@string/main_debug_mode"
+        android:visibility="gone" />
+
     <TextView
         android:id="@+id/textAppVersion"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="32dp"
+        android:layout_marginTop="8dp"
         android:textSize="12sp"
         android:alpha="0.6" />
 

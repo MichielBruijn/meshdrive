@@ -28,6 +28,17 @@ class VideoReceiver {
     private val pendingRotation = HashMap<Int, Int>()
     private var lastRotation = -1
 
+    // Frames complete in COMPLETION order, not necessarily frameId order - UDP can
+    // reorder packets, more so over a cellular link than a local network. Most frames
+    // are P-frames (KEY_I_FRAME_INTERVAL is seconds, not every frame - VideoSender),
+    // which predict off the frame immediately before them in encode order; feeding one
+    // out of order breaks that prediction and corrupts everything after it until the
+    // next keyframe. Confirmed on real hardware as garbled video/artifacts specifically
+    // over 4G/5G (much rarer on wifi, where reordering is uncommon) - fixed by simply
+    // never feeding a frameId at or below one already fed, i.e. treating a late/
+    // reordered frame the same as a lost one instead of decoding it anyway.
+    private var lastFedFrameId = -1
+
     var onError: ((String) -> Unit)? = null
 
     /** Fires only when the vehicle's reported orientation actually changes. */
@@ -73,6 +84,13 @@ class VideoReceiver {
         if (slots.all { it != null }) {
             pending.remove(header.frameId)
             val rotation = pendingRotation.remove(header.frameId) ?: 0
+            if (header.frameId <= lastFedFrameId) {
+                // Reordered/late - a newer frame already went to the decoder. See
+                // lastFedFrameId's doc: decoding this now would corrupt everything
+                // after it, so it's dropped exactly like a genuinely lost frame.
+                return
+            }
+            lastFedFrameId = header.frameId
             if (rotation != lastRotation) {
                 lastRotation = rotation
                 onRotationChanged?.invoke(rotation)
@@ -142,6 +160,7 @@ class VideoReceiver {
         pending.clear()
         pendingRotation.clear()
         lastRotation = -1
+        lastFedFrameId = -1
         fpsFrameCount = 0
         fpsWindowStartMs = 0L
     }

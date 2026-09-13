@@ -11,6 +11,7 @@ import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -149,7 +150,7 @@ class UsbServoBridge(
             while (isActive) {
                 val p = port ?: break
                 try {
-                    val n = p.read(buf, 500)
+                    val n = p.read(buf, 100)
                     for (i in 0 until n) {
                         when (val c = buf[i].toInt().toChar()) {
                             '\n' -> {
@@ -168,8 +169,17 @@ class UsbServoBridge(
         }
     }
 
-    private fun stopReading() {
-        readJob?.cancel()
+    // suspend + cancelAndJoin(), not a plain cancel(): Job.cancel() only marks the
+    // coroutine cancelled, it does not wait for an already in-flight, blocking
+    // p.read() call to actually return - that call keeps running (up to its own
+    // timeout) even after "stop". Callers that immediately start writing right
+    // after stopReading() could still race that lingering read against their own
+    // writes on the same UsbDeviceConnection - confirmed on real hardware as
+    // firmware bytes corrupting partway through a flash ("wrong magic byte" a few
+    // KB in, not just at the very start) even after the read loop was nominally
+    // "stopped" first.
+    private suspend fun stopReading() {
+        readJob?.cancelAndJoin()
         readJob = null
         lineBuffer.clear()
     }
@@ -260,9 +270,35 @@ class UsbServoBridge(
                     else -> previousHandler?.invoke(line)
                 }
             }
-            startReading()
             try {
-                synchronized(writeLock) { p.write("OTAUPDATE=${data.size}\n".toByteArray(), 500) }
+                // Purge stale bytes sitting in the CP210x's own hardware FIFOs before this
+                // attempt sends anything - the same long-lived `port` is reused across
+                // retries (nothing disconnects/reconnects between them), so leftover bytes
+                // from a previous failed/aborted attempt could otherwise prepend themselves
+                // onto this one and corrupt it from the first bytes.
+                runCatching { p.purgeHwBuffers(true, true) }
+
+                // MD5 rides along so the board can verify the image actually arrived intact
+                // (Update.setMD5(), firmwareUpdate.h) - this link is a home-rolled raw byte
+                // stream with no error detection of its own, unlike the wifi upload path's
+                // TCP.
+                val md5Hex = java.security.MessageDigest.getInstance("MD5").digest(data)
+                    .joinToString("") { "%02x".format(it) }
+                synchronized(writeLock) { p.write("OTAUPDATE=${data.size}:$md5Hex\n".toByteArray(), 500) }
+
+                // Deliberately no baud-rate bump for the transfer itself: tried both 921600
+                // and 460800, both reliably corrupted the transfer a few KB in ("wrong magic
+                // byte") on this specific CP210x+ESP32 pairing, no matter how carefully the
+                // switch-over handshake was synchronized (an OTAREADY/OTAGO exchange, ruling
+                // out a simple timing race) or how much read/write concurrency was removed
+                // around it. Staying at 115200 the whole way is slow (~1%/second) but is the
+                // version that actually completes - see firmwareUpdate.h's doc on the same
+                // choice, firmware-side.
+                //
+                // No concurrent read needed here either for the same reason it was removed
+                // from normal driving (see startReading()'s doc): the board sends nothing
+                // back until it's fully received the image, so reading is only turned on
+                // again afterwards, to catch OTAOK/OTAERROR.
                 var offset = 0
                 val chunkSize = 2048
                 while (offset < data.size) {
@@ -271,7 +307,10 @@ class UsbServoBridge(
                     offset = end
                     onProgress(offset, data.size)
                 }
-                val outcome = withTimeoutOrNull(20_000) { result.await() }
+                startReading()
+                // A few seconds' margin beyond the transfer itself for the board to finish
+                // flushing its last flash page and running Update.end()'s verification.
+                val outcome = withTimeoutOrNull(30_000) { result.await() }
                 if (outcome != null) onResult(outcome.first, outcome.second) else onResult(false, "no response from board (timed out)")
             } catch (e: Exception) {
                 onResult(false, "write failed: ${e.message}")

@@ -17,26 +17,38 @@
         android:textSize="18sp"
         android:layout_marginBottom="16dp" />
 
-    <EditText
-        android:id="@+id/editVehicleAddress"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="@string/controller_vehicle_address_hint"
-        android:inputType="text" />
-
+    <!-- Scanning connects immediately (ControllerActivity) - this is the only
+         action a normal user needs. -->
     <Button
         android:id="@+id/buttonScanQr"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
         android:text="@string/controller_scan_qr" />
 
-    <Button
-        android:id="@+id/buttonConnectRtc"
+    <!-- Manual address entry - debug-only, hidden unless "Debug mode" is on
+         (MainActivity): scanning the QR is the normal way to pair. -->
+    <LinearLayout
+        android:id="@+id/debugSection"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="@string/controller_connect" />
+        android:orientation="vertical">
+
+        <EditText
+            android:id="@+id/editVehicleAddress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:hint="@string/controller_vehicle_address_hint"
+            android:inputType="text" />
+
+        <Button
+            android:id="@+id/buttonConnectRtc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/controller_connect" />
+
+    </LinearLayout>
 
 </LinearLayout>
 </ScrollView>
