@@ -48,6 +48,10 @@ import java.net.InetAddress
  */
 class VehicleActivity : AppCompatActivity() {
 
+    companion object {
+        private const val YGGDRASIL_PACKAGE = "eu.neilalexander.yggdrasil"
+    }
+
     private var service: VehicleForegroundService? = null
     private var bound = false
     private val tickHandler = Handler(Looper.getMainLooper())
@@ -116,7 +120,16 @@ class VehicleActivity : AppCompatActivity() {
                 textOwnAddress.text = "Eigen Yggdrasil-adres: $address"
                 imageQr.setImageBitmap(QrCode.encode(address))
             } else {
-                textOwnAddress.text = "Eigen Yggdrasil-adres: niet gevonden (Yggdrasil-app actief?)"
+                textOwnAddress.text = "Eigen Yggdrasil-adres: niet gevonden - Yggdrasil-app wordt geopend…"
+                // There's no public API to enable Yggdrasil's VPN from another app
+                // (its own state broadcast is LocalBroadcastManager-only, checked in
+                // its source - not visible outside its own process), so the best
+                // available "automatic" behavior is bringing its own UI to the
+                // front for a one-tap enable, instead of making the user go find it
+                // themselves in the app drawer.
+                packageManager.getLaunchIntentForPackage(YGGDRASIL_PACKAGE)?.let { launchIntent ->
+                    startActivity(launchIntent)
+                }
             }
         }
 

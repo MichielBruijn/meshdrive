@@ -11,6 +11,7 @@ import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import android.view.OrientationEventListener
 import android.view.Surface
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -27,6 +28,14 @@ import java.net.InetAddress
  * KEY_PREPEND_HEADER_TO_SYNC_FRAMES makes the encoder repeat SPS/PPS before every
  * keyframe's output buffer, so the decoder can (re)initialize correctly even if
  * it missed the very first frame or a keyframe's fragments were partially lost.
+ *
+ * The camera's raw output is always in its fixed sensor mounting orientation,
+ * regardless of how the phone is currently held - encoded frames are sent as-is
+ * (rotating the actual pixel data would need a GLES transform step before the
+ * encoder, real work for no benefit here). Instead, an OrientationEventListener
+ * tracks the phone's current physical orientation and computes the rotation the
+ * *receiver* should apply for correct, non-sideways display (see VideoPacket's
+ * doc) - the standard formula from Android's own Camera2Video sample.
  */
 class VideoSender(private val context: Context) {
 
@@ -37,9 +46,19 @@ class VideoSender(private val context: Context) {
     private var remoteAddress: InetAddress? = null
     private var remotePort: Int = 0
     private var frameId = 0
+    private var sensorOrientation = 90
+    @Volatile private var displayRotationDegrees = 0
 
     private val cameraThread = HandlerThread("VideoSenderCamera").apply { start() }
     private val cameraHandler = Handler(cameraThread.looper)
+
+    private val orientationListener = object : OrientationEventListener(context) {
+        override fun onOrientationChanged(orientation: Int) {
+            if (orientation == ORIENTATION_UNKNOWN) return
+            val snapped = ((orientation + 45) / 90 * 90) % 360
+            displayRotationDegrees = (sensorOrientation - snapped + 360) % 360
+        }
+    }
 
     var onError: ((String) -> Unit)? = null
 
@@ -89,6 +108,8 @@ class VideoSender(private val context: Context) {
         codec.start()
         encoder = codec
 
+        if (orientationListener.canDetectOrientation()) orientationListener.enable()
+
         try {
             openCamera(inputSurface)
         } catch (e: SecurityException) {
@@ -105,6 +126,8 @@ class VideoSender(private val context: Context) {
             onError?.invoke("no camera found")
             return
         }
+        sensorOrientation = manager.getCameraCharacteristics(cameraId)
+            .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
 
         manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
@@ -138,7 +161,7 @@ class VideoSender(private val context: Context) {
         val sock = socket ?: return
         val addr = remoteAddress ?: return
         val id = frameId++
-        for (chunk in VideoPacket.fragment(id, data)) {
+        for (chunk in VideoPacket.fragment(id, data, displayRotationDegrees)) {
             try {
                 sock.send(DatagramPacket(chunk, chunk.size, addr, remotePort))
             } catch (_: Exception) {
@@ -149,6 +172,7 @@ class VideoSender(private val context: Context) {
     }
 
     fun stop() {
+        orientationListener.disable()
         captureSession?.close()
         cameraDevice?.close()
         cameraDevice = null

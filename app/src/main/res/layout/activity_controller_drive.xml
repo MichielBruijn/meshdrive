@@ -1,13 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/videoContainer"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@android:color/black">
 
-    <SurfaceView
-        android:id="@+id/surfaceVideo"
+    <!-- TextureView (not SurfaceView) because correct display needs a rotation
+         transform (Matrix) - SurfaceView doesn't support that, TextureView does.
+         Sized/rotated in code once the vehicle's orientation is known, kept at its
+         native aspect ratio (no stretching) - see ControllerDriveActivity. -->
+    <TextureView
+        android:id="@+id/textureVideo"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        android:layout_gravity="center" />
 
     <!-- Steering, bottom-left. Only x is used. -->
     <nu.bruijn.rcvehicle.controller.JoystickView

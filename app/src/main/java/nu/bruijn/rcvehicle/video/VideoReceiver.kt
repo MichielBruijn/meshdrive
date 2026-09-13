@@ -24,8 +24,13 @@ class VideoReceiver {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var receiveJob: Job? = null
     private val pending = HashMap<Int, Array<ByteArray?>>()
+    private val pendingRotation = HashMap<Int, Int>()
+    private var lastRotation = -1
 
     var onError: ((String) -> Unit)? = null
+
+    /** Fires only when the vehicle's reported orientation actually changes. */
+    var onRotationChanged: ((Int) -> Unit)? = null
 
     fun start(port: Int, outputSurface: Surface, width: Int = 640, height: Int = 480) {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
@@ -55,11 +60,17 @@ class VideoReceiver {
     private fun handlePacket(data: ByteArray) {
         val header = VideoPacket.parseHeader(data, data.size) ?: return
         val slots = pending.getOrPut(header.frameId) { arrayOfNulls(header.fragCount) }
+        pendingRotation[header.frameId] = header.rotationDegrees
         if (header.fragIndex !in slots.indices) return
         slots[header.fragIndex] = data.copyOfRange(VideoPacket.PAYLOAD_OFFSET, data.size)
 
         if (slots.all { it != null }) {
             pending.remove(header.frameId)
+            val rotation = pendingRotation.remove(header.frameId) ?: 0
+            if (rotation != lastRotation) {
+                lastRotation = rotation
+                onRotationChanged?.invoke(rotation)
+            }
             val assembled = ByteArray(slots.sumOf { it!!.size })
             var offset = 0
             for (part in slots) {
@@ -70,7 +81,10 @@ class VideoReceiver {
         }
 
         // Drop stale incomplete frames so a lost fragment can't leak memory forever.
-        pending.keys.filter { it < header.frameId - 5 }.forEach { pending.remove(it) }
+        pending.keys.filter { it < header.frameId - 5 }.forEach {
+            pending.remove(it)
+            pendingRotation.remove(it)
+        }
     }
 
     private fun feedDecoder(data: ByteArray) {
@@ -107,5 +121,7 @@ class VideoReceiver {
         }
         decoder = null
         pending.clear()
+        pendingRotation.clear()
+        lastRotation = -1
     }
 }
