@@ -31,9 +31,15 @@ class InternetNetworkBinder(context: Context) {
 
     fun observe(): Flow<State> = callbackFlow {
         trySend(State.Requesting)
+        // NET_CAPABILITY_VALIDATED is NOT a legal capability to request - Android throws
+        // IllegalArgumentException("Cannot request network with VALIDATED") immediately
+        // (confirmed on real hardware: this crashed VehicleActivity every time "Check for
+        // update" ran on real wifi with internet). It's only meaningful for inspecting an
+        // existing network's current NetworkCapabilities, not for filtering a request.
+        // NET_CAPABILITY_INTERNET alone is the correct, requestable way to ask for "any
+        // network that claims to provide internet".
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
             .build()
 
         val callback = object : ConnectivityManager.NetworkCallback() {
