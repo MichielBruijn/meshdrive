@@ -11,7 +11,11 @@ package nu.bruijn.rcvehicle.video
 enum class VideoQuality(val width: Int, val height: Int, val bitrate: Int, val label: String) {
     LOW(320, 240, 300_000, "Low"),
     MEDIUM(640, 480, 800_000, "Medium"),
-    HIGH(960, 720, 1_500_000, "High"),
+    // Was 960x720 - confirmed on real hardware that this non-standard size fails to
+    // even start on the Fairphone 5's camera (capture session configuration rejected
+    // by the HAL entirely, not just lower quality - total loss of video). 1280x960 is
+    // exactly 2x VGA in each dimension, a much more commonly-supported encoder target.
+    HIGH(1280, 960, 1_500_000, "High"),
     ;
 
     companion object {

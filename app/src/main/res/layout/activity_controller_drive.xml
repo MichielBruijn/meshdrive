@@ -64,6 +64,7 @@
         android:layout_margin="8dp"
         android:text="@string/controller_rear_view" />
 
+    <!-- Debug-only, same as the resolution picker below - not a normal driving control. -->
     <Button
         android:id="@+id/buttonSteerLimit"
         style="?android:attr/buttonStyleSmall"
@@ -71,6 +72,7 @@
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
         android:layout_margin="8dp"
+        android:visibility="gone"
         android:text="@string/controller_steer_limit" />
 
     <!-- Video quality: manual Low/Med/High picks, or Auto to let the app step down/up

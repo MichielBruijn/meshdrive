@@ -129,15 +129,18 @@ class ControllerDriveActivity : AppCompatActivity() {
         val textDebugOverlay = findViewById<TextView>(R.id.textDebugOverlay)
         val textConnectionWarning = findViewById<TextView>(R.id.textConnectionWarning)
 
-        // Verbose log + FPS/latency numbers + the resolution picker are diagnostic/rarely-
-        // needed, hidden unless "Debug mode" is on (MainActivity) - textConnectionWarning
-        // below stays visible regardless, that one's a safety signal, not a diagnostic.
+        // Verbose log + FPS/latency numbers + the resolution picker + steer limit are
+        // diagnostic/rarely-needed, hidden unless "Debug mode" is on (MainActivity) -
+        // textConnectionWarning below stays visible regardless, that one's a safety
+        // signal, not a diagnostic.
         val qualitySection = findViewById<View>(R.id.qualitySection)
+        val buttonSteerLimitView = findViewById<View>(R.id.buttonSteerLimit)
         lifecycleScope.launch {
             val debugEnabled = ModePrefs(applicationContext).debugEnabled.first()
             logView.visibility = if (debugEnabled) View.VISIBLE else View.GONE
             textDebugOverlay.visibility = if (debugEnabled) View.VISIBLE else View.GONE
             qualitySection.visibility = if (debugEnabled) View.VISIBLE else View.GONE
+            buttonSteerLimitView.visibility = if (debugEnabled) View.VISIBLE else View.GONE
         }
 
         fun log(line: String) = runOnUiThread {

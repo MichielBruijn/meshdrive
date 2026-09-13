@@ -235,7 +235,23 @@ class VideoSender(private val context: Context) {
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
-                        onError?.invoke("capture session config failed")
+                        session.close()
+                        // Not every camera HAL accepts every resolution as an encoder
+                        // target - confirmed on real hardware (Fairphone 5 rejected
+                        // 960x720 outright, "Set of requested inputs/outputs not
+                        // supported by HAL", no video at all rather than just lower
+                        // quality). Rather than hardcode which presets are safe on
+                        // which device, just try the next lower one automatically -
+                        // "always start at the highest that actually works" without
+                        // needing to know in advance what that is.
+                        val fallback = VideoQuality.entries.getOrNull(currentQuality.ordinal - 1)
+                        if (fallback != null) {
+                            onError?.invoke("${currentQuality.label} not supported by this camera, trying ${fallback.label}")
+                            closePipeline()
+                            openPipeline(fallback)
+                        } else {
+                            onError?.invoke("capture session config failed at ${currentQuality.label} (lowest preset)")
+                        }
                     }
                 }, cameraHandler)
             }

@@ -480,9 +480,12 @@ class VehicleActivity : AppCompatActivity() {
             return
         }
         log("starting video to ${controllerAddress.hostAddress}")
-        // Starts at HIGH, matching ControllerDriveActivity's own default - the
-        // auto-quality loop (or a manual pick, both debug-only now) can still step it
-        // down/up from there once real FPS numbers come in.
+        // Starts at HIGH - VideoSender.openCamera()'s onConfigureFailed now falls back
+        // to the next lower preset automatically if the camera HAL rejects a
+        // resolution outright (confirmed on real hardware: the Fairphone 5's camera
+        // does exactly that for 960x720, "Set of requested inputs/outputs not
+        // supported by HAL" - not just lower quality, no video at all without this),
+        // so this is always "the highest that actually works", not a hardcoded guess.
         videoSender.start(controllerAddress.hostAddress!!, VideoPacket.PORT, VideoQuality.HIGH)
     }
 
