@@ -17,8 +17,28 @@
         android:textSize="18sp"
         android:layout_marginBottom="16dp" />
 
-    <!-- Scanning connects immediately (ControllerActivity) - this is the only
-         action a normal user needs. -->
+    <!-- Populated in code (ControllerActivity) from ModePrefs.recentVehicleAddresses -
+         tapping a row connects straight to it, no re-scanning needed. Hidden (both the
+         title and the list itself) when there's nothing to show yet. -->
+    <TextView
+        android:id="@+id/textRecentVehiclesTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/controller_recent_vehicles"
+        android:textSize="14sp"
+        android:alpha="0.7"
+        android:layout_marginBottom="8dp"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/recentVehiclesList"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Scanning connects immediately (ControllerActivity) - the only action needed
+         for a vehicle not already in the list above. -->
     <Button
         android:id="@+id/buttonScanQr"
         android:layout_width="match_parent"

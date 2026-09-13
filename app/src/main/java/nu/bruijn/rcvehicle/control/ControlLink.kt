@@ -8,6 +8,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -175,5 +176,32 @@ class ControlLink {
 
     companion object {
         const val PORT = 7861
+
+        /**
+         * One-shot "is this vehicle reachable right now" check for ControllerActivity's
+         * recent-vehicles list - a single Ping/Pong round trip on a throwaway socket, not
+         * a full connect()/startPing() session. Works whenever the vehicle's own screen
+         * is open (VehicleActivity now auto-starts listen() as soon as it opens), since
+         * listen() replies to any Ping unconditionally, regardless of whether a real
+         * control session is active. False on any failure or timeout - "not reachable"
+         * covers both "vehicle off" and "genuinely no route", no need to distinguish
+         * those for a simple online/offline dot.
+         */
+        suspend fun probeOnline(address: String, timeoutMs: Int = 1500): Boolean = withContext(Dispatchers.IO) {
+            try {
+                DatagramSocket().use { socket ->
+                    socket.soTimeout = timeoutMs
+                    val inetAddress = InetAddress.getByName(address)
+                    val ping = ControlFrame.encodePing(SystemClock.elapsedRealtime())
+                    socket.send(DatagramPacket(ping, ping.size, inetAddress, PORT))
+                    val buffer = ByteArray(64)
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    socket.receive(packet) // throws SocketTimeoutException if nothing replies in time
+                    ControlFrame.decode(packet.data, packet.length) is ControlFrame.Decoded.Pong
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
 }

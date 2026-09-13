@@ -14,23 +14,28 @@ enum class AppMode { CONTROLLER, VEHICLE }
 
 /**
  * Persists which mode this phone was last launched in, and (for controller mode) the
- * paired vehicle's Yggdrasil address entered once during pairing. See the plan's
- * "Pairing" section - there is no discovery protocol, this is the entire mechanism.
+ * vehicles paired with so far - a small MRU list (ControllerActivity), so scanning a
+ * QR code is only needed once per vehicle rather than every time. See the plan's
+ * "Pairing" section - there is still no discovery protocol, this is the entire
+ * mechanism, just remembered across multiple vehicles instead of only the last one.
  */
 class ModePrefs(private val context: Context) {
 
     private object Keys {
         val MODE = stringPreferencesKey("app_mode")
-        val PAIRED_YGGDRASIL_ADDRESS = stringPreferencesKey("paired_yggdrasil_address")
+        val RECENT_VEHICLES = stringPreferencesKey("recent_vehicle_addresses")
         val DEBUG_ENABLED = booleanPreferencesKey("debug_enabled")
     }
+
+    private val MAX_RECENT_VEHICLES = 10
 
     val mode: Flow<AppMode?> = context.dataStore.data.map { prefs ->
         prefs[Keys.MODE]?.let { runCatching { AppMode.valueOf(it) }.getOrNull() }
     }
 
-    val pairedYggdrasilAddress: Flow<String?> = context.dataStore.data.map { prefs ->
-        prefs[Keys.PAIRED_YGGDRASIL_ADDRESS]
+    /** Most-recently-used first, so the list doubles as "last used" without a separate key. */
+    val recentVehicleAddresses: Flow<List<String>> = context.dataStore.data.map { prefs ->
+        prefs[Keys.RECENT_VEHICLES]?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
     }
 
     /** Off by default - raw addresses, logs, the FPS/latency overlay, and the wifi
@@ -43,8 +48,21 @@ class ModePrefs(private val context: Context) {
         context.dataStore.edit { it[Keys.MODE] = mode.name }
     }
 
-    suspend fun setPairedYggdrasilAddress(address: String) {
-        context.dataStore.edit { it[Keys.PAIRED_YGGDRASIL_ADDRESS] = address }
+    /** Moves [address] to the front (adding it if new), so scanning/connecting to a
+     * vehicle again just bumps it back to the top instead of duplicating it. */
+    suspend fun addRecentVehicleAddress(address: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.RECENT_VEHICLES]?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
+            val updated = (listOf(address) + current.filter { it != address }).take(MAX_RECENT_VEHICLES)
+            prefs[Keys.RECENT_VEHICLES] = updated.joinToString("\n")
+        }
+    }
+
+    suspend fun removeRecentVehicleAddress(address: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.RECENT_VEHICLES]?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
+            prefs[Keys.RECENT_VEHICLES] = current.filter { it != address }.joinToString("\n")
+        }
     }
 
     suspend fun setDebugEnabled(enabled: Boolean) {

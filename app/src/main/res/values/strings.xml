@@ -22,7 +22,11 @@
     <string name="controller_setup_title">Connect to vehicle</string>
     <string name="controller_vehicle_address_hint">Vehicle\'s Yggdrasil address</string>
     <string name="controller_connect">Connect</string>
-    <string name="controller_scan_qr">Scan vehicle\'s QR code</string>
+    <string name="controller_scan_qr">Add vehicle (scan QR code)</string>
+    <string name="controller_recent_vehicles">Recent vehicles</string>
+    <string name="controller_vehicle_online">Online</string>
+    <string name="controller_vehicle_offline">Offline</string>
+    <string name="controller_remove_vehicle">Remove</string>
     <string name="controller_steer_limit">Limit steering at high throttle</string>
     <string name="controller_rear_view">Rear view</string>
     <string name="controller_quality_low">Low</string>
