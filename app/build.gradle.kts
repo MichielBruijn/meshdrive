@@ -46,7 +46,9 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // stream-webrtc-android is unused (see RtcClient's doc: ICE never surfaces the
+    // Yggdrasil tun interface on a cellular-only phone) but left as a dependency in
+    // case a future library fix makes it viable again.
     implementation("io.getstream:stream-webrtc-android:1.3.8")
-    // Camera capture/video track land in a later pass (plan section 4's video half);
-    // fase 4 is data-channel-only, no video yet.
+    implementation("com.github.mik3y:usb-serial-for-android:3.11.0")
 }

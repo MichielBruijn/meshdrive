@@ -3,7 +3,9 @@
     <string name="mode_picker_title">Kies modus</string>
     <string name="mode_controller">Besturing</string>
     <string name="mode_vehicle">Voertuig</string>
-    <string name="vehicle_debug_title">Debug: wifi-naar-ESP32 test (fase 2)</string>
+    <string name="vehicle_debug_title">ESP32-verbinding</string>
+    <string name="vehicle_connect_usb">Verbind via USB-kabel</string>
+    <string name="vehicle_wifi_fallback_title">Of via wifi (fallback):</string>
     <string name="vehicle_esp_ip_hint">ESP32 IP-adres</string>
     <string name="vehicle_connect">Verbinden</string>
     <string name="vehicle_status_idle">Nog niet verbonden</string>

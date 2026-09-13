@@ -11,6 +11,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <!-- The ESP32 only ever speaks plain http/ws (no TLS capability), both as its own
          AP and on a home network - cleartext must stay allowed for this app. -->
@@ -28,6 +29,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Auto-launches this app when the ESP32 is plugged in via USB-OTG,
+                 matching one of the chips in device_filter.xml. Still opens the
+                 mode picker (not straight into VehicleActivity) - picking "Voertuig"
+                 is a one-tap follow-up. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter" />
         </activity>
 
         <activity

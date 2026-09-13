@@ -15,10 +15,11 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
- * Hosts the wifi-to-ESP32 link (EspWifiNetworkBinder + ServoBridge) so it survives
- * screen-off/backgrounding. Signaling/RTC/camera land in a later pass; for this
- * stage (plan section "fase 2") it's driven by VehicleActivity's debug sliders
- * instead of a data channel.
+ * Hosts both ways of reaching the ESP32 - USB-OTG serial (UsbServoBridge, primary
+ * since 2026-09-14) and wifi (ServoBridge, kept as a fallback) - so whichever one
+ * is active survives screen-off/backgrounding. `activeLink` is whichever the user
+ * last successfully connected; VehicleActivity's control-input tick loop sends
+ * through that regardless of which transport it is.
  */
 class VehicleForegroundService : Service() {
 
@@ -30,8 +31,12 @@ class VehicleForegroundService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private val channelId = "vehicle_service"
 
-    val servoBridge = ServoBridge()
+    private val servoBridge = ServoBridge()
+    private val usbServoBridge = UsbServoBridge(this)
     private lateinit var networkBinder: EspWifiNetworkBinder
+
+    var activeLink: ServoLink? = null
+        private set
 
     var onStatus: ((String) -> Unit)? = null
     private var espIp: String = "192.168.4.1"
@@ -47,6 +52,7 @@ class VehicleForegroundService : Service() {
         }
         networkBinder = EspWifiNetworkBinder(applicationContext)
         servoBridge.onStateChange = { status -> onStatus?.invoke(status) }
+        usbServoBridge.onStateChange = { status -> onStatus?.invoke(status) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -59,8 +65,15 @@ class VehicleForegroundService : Service() {
         return START_STICKY
     }
 
+    /** USB-OTG serial - the primary path. See UsbServoBridge's doc for why. */
+    fun connectUsb() {
+        activeLink?.stop()
+        activeLink = usbServoBridge
+        usbServoBridge.start()
+    }
+
     /**
-     * Call once the user has entered/confirmed the ESP32's IP (bench-test debug UI).
+     * Wifi fallback: call once the user has entered/confirmed the ESP32's IP.
      * Cancels any previous network observation first - without this, tapping
      * "Verbinden" more than once left earlier requestNetwork() registrations running
      * alongside the new one, each independently restarting ServoBridge's websocket
@@ -69,6 +82,8 @@ class VehicleForegroundService : Service() {
     fun connectToEsp(ip: String) {
         espIp = ip
         networkJob?.cancel()
+        activeLink?.stop()
+        activeLink = servoBridge
         onStatus?.invoke("requesting wifi network…")
         networkJob = serviceScope.launch {
             networkBinder.observe().collect { state ->
@@ -92,6 +107,7 @@ class VehicleForegroundService : Service() {
 
     override fun onDestroy() {
         servoBridge.stop()
+        usbServoBridge.stop()
         serviceScope.cancel()
         super.onDestroy()
     }

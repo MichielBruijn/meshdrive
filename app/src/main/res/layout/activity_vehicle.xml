@@ -17,6 +17,18 @@
         android:textSize="18sp"
         android:layout_marginBottom="16dp" />
 
+    <Button
+        android:id="@+id/buttonConnectUsb"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/vehicle_connect_usb" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="@string/vehicle_wifi_fallback_title" />
+
     <EditText
         android:id="@+id/editEspIp"
         android:layout_width="match_parent"

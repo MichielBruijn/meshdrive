@@ -30,13 +30,15 @@ import nu.bruijn.rcvehicle.video.VideoSender
 import java.net.InetAddress
 
 /**
- * Debug UI: fase 2 (wifi-to-ESP32, top half) drives ServoBridge with two sliders,
- * fase 4 (UDP control link over Yggdrasil, bottom half) listens for the controller
- * and relays whatever it receives into the SAME ServoBridge - so with both
- * sections connected at once this is already a real end-to-end controller-phone ->
- * vehicle-phone -> ESP32 path. Video starts automatically the moment the first
- * control packet arrives, since that's how this side learns the controller's
- * Yggdrasil address (see ControlLink.listen's doc) - no separate video-connect step.
+ * Debug UI: top half connects to the ESP32 (USB-OTG serial, primary - see
+ * UsbServoBridge's doc; wifi kept as a fallback via ServoBridge) and drives it
+ * with two sliders. Bottom half (UDP control link over Yggdrasil, fase 4) listens
+ * for the controller and relays whatever it receives into the SAME
+ * `service.activeLink` - so with both sections connected at once this is already
+ * a real end-to-end controller-phone -> vehicle-phone -> ESP32 path. Video starts
+ * automatically the moment the first control packet arrives, since that's how
+ * this side learns the controller's Yggdrasil address (see ControlLink.listen's
+ * doc) - no separate video-connect step.
  *
  * See ControlLink's/VideoSender's docs for why these are plain UDP sockets instead
  * of the originally-planned WebRTC data channel/video track.
@@ -88,6 +90,10 @@ class VehicleActivity : AppCompatActivity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1)
         }
 
+        findViewById<Button>(R.id.buttonConnectUsb).setOnClickListener {
+            service?.connectUsb()
+        }
+
         findViewById<Button>(R.id.buttonConnect).setOnClickListener {
             service?.connectToEsp(editIp.text.toString().trim())
         }
@@ -110,7 +116,7 @@ class VehicleActivity : AppCompatActivity() {
                 try {
                     controlLink.listen(ControlLink.PORT) { decoded, senderAddress ->
                         log("control #${decoded.seq}: steer=${decoded.steer} throttle=${decoded.throttle}")
-                        service?.servoBridge?.sendControl(decoded.steer, decoded.throttle)
+                        service?.activeLink?.sendControl(decoded.steer, decoded.throttle)
                         maybeStartVideo(senderAddress, ::log)
                     }
                     log("listening for UDP control on port ${ControlLink.PORT}")
@@ -141,7 +147,7 @@ class VehicleActivity : AppCompatActivity() {
             override fun run() {
                 val steer = (seekSteer.progress - 100) / 100f
                 val throttle = (seekThrottle.progress - 100) / 100f
-                service?.servoBridge?.sendControl(steer, throttle)
+                service?.activeLink?.sendControl(steer, throttle)
                 tickHandler.postDelayed(this, 30) // ~33Hz, matching the browser UI's own throttle rate
             }
         }
