@@ -95,6 +95,11 @@ class ControlLink {
         sendBytes(ControlFrame.encodeTelemetryEnable(enabled))
     }
 
+    /** Controller side: tune the speed-based steering limiter (debug sliders). */
+    fun sendSteerLimitConfig(maxSpeedKmh: Float, reductionFraction: Float) {
+        sendBytes(ControlFrame.encodeSteerLimitConfig(maxSpeedKmh, reductionFraction))
+    }
+
     // Vehicle side: who to send Telemetry frames to - learned from whichever address
     // listen() last received a real packet from, same as maybeStartVideo()'s address
     // (VehicleActivity) - kept here too since sendTelemetry() can fire independently

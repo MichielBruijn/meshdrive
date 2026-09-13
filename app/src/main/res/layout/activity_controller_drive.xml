@@ -77,7 +77,9 @@
         android:layout_marginTop="56dp"
         android:text="@string/controller_mute" />
 
-    <!-- Debug-only, same as the resolution picker below - not a normal driving control. -->
+    <!-- Always visible, not debug-only: a real driving-safety control (speed-based
+         steering limiter, VehicleActivity.applySpeedSteerLimit()), same category as
+         rear view/mute. The curve itself (below) is debug-only to tune. -->
     <Button
         android:id="@+id/buttonSteerLimit"
         style="?android:attr/buttonStyleSmall"
@@ -85,8 +87,46 @@
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
         android:layout_margin="8dp"
-        android:visibility="gone"
         android:text="@string/controller_steer_limit" />
+
+    <!-- Tunes the curve Safe steering (above) uses - debug-only, day-to-day driving
+         just wants it on/off, not to retune the curve. -->
+    <LinearLayout
+        android:id="@+id/steerLimitConfigSection"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="56dp"
+        android:layout_marginEnd="8dp"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/textSteerLimitMaxSpeed"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@android:color/white"
+            android:text="@string/controller_steer_limit_max_speed" />
+
+        <SeekBar
+            android:id="@+id/seekSteerLimitMaxSpeed"
+            android:layout_width="160dp"
+            android:layout_height="wrap_content"
+            android:max="60" />
+
+        <TextView
+            android:id="@+id/textSteerLimitReduction"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@android:color/white"
+            android:text="@string/controller_steer_limit_reduction" />
+
+        <SeekBar
+            android:id="@+id/seekSteerLimitReduction"
+            android:layout_width="160dp"
+            android:layout_height="wrap_content"
+            android:max="100" />
+    </LinearLayout>
 
     <!-- Video quality: manual Low/Med/High picks, or Auto to let the app step down/up
          from decoded FPS - see ControllerDriveActivity's auto-quality loop. Manual

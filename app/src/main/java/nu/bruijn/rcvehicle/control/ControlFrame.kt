@@ -19,9 +19,11 @@ object ControlFrame {
     private const val TYPE_CAMERA: Byte = 0x06
     private const val TYPE_TELEMETRY_ENABLE: Byte = 0x07
     private const val TYPE_TELEMETRY: Byte = 0x08
+    private const val TYPE_STEER_LIMIT_CONFIG: Byte = 0x09
     private const val CONTROL_SIZE = 9
     private const val TIMESTAMP_SIZE = 9 // type + long
     private const val TELEMETRY_SIZE = 1 + 1 + 4 + 8 + 8 // type, hasFix, speed float, lat/lon doubles
+    private const val STEER_LIMIT_CONFIG_SIZE = 1 + 4 + 4 // type, maxSpeedKmh float, reductionFraction float
 
     fun encodeControl(steer: Float, throttle: Float, seq: Int): ByteArray {
         val bb = ByteBuffer.allocate(CONTROL_SIZE).order(ByteOrder.LITTLE_ENDIAN)
@@ -63,6 +65,17 @@ object ControlFrame {
         return bb.array()
     }
 
+    /** Controller -> vehicle: tunes the speed-based steering limiter (debug-only
+     * sliders) - see VehicleActivity.applySpeedSteerLimit()'s doc for the math
+     * these two feed into. */
+    fun encodeSteerLimitConfig(maxSpeedKmh: Float, reductionFraction: Float): ByteArray {
+        val bb = ByteBuffer.allocate(STEER_LIMIT_CONFIG_SIZE).order(ByteOrder.LITTLE_ENDIAN)
+        bb.put(TYPE_STEER_LIMIT_CONFIG)
+        bb.putFloat(maxSpeedKmh)
+        bb.putFloat(reductionFraction)
+        return bb.array()
+    }
+
     private fun encodeTimestamp(type: Byte, value: Long): ByteArray {
         val bb = ByteBuffer.allocate(TIMESTAMP_SIZE).order(ByteOrder.LITTLE_ENDIAN)
         bb.put(type)
@@ -79,6 +92,7 @@ object ControlFrame {
         data class Camera(val useFront: Boolean) : Decoded()
         data class TelemetryEnable(val enabled: Boolean) : Decoded()
         data class Telemetry(val hasFix: Boolean, val speedKmh: Float, val lat: Double, val lon: Double) : Decoded()
+        data class SteerLimitConfig(val maxSpeedKmh: Float, val reductionFraction: Float) : Decoded()
     }
 
     fun decode(bytes: ByteArray, length: Int): Decoded? {
@@ -126,6 +140,14 @@ object ControlFrame {
                 val lat = bb.double
                 val lon = bb.double
                 Decoded.Telemetry(hasFix, speedKmh, lat, lon)
+            }
+            TYPE_STEER_LIMIT_CONFIG -> {
+                if (length != STEER_LIMIT_CONFIG_SIZE) return null
+                val bb = ByteBuffer.wrap(bytes, 0, length).order(ByteOrder.LITTLE_ENDIAN)
+                bb.position(1)
+                val maxSpeedKmh = bb.float
+                val reductionFraction = bb.float
+                Decoded.SteerLimitConfig(maxSpeedKmh, reductionFraction)
             }
             else -> null
         }

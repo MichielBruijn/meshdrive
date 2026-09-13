@@ -27,7 +27,9 @@
     <string name="controller_vehicle_online">Online</string>
     <string name="controller_vehicle_offline">Offline</string>
     <string name="controller_remove_vehicle">Remove</string>
-    <string name="controller_steer_limit">Limit steering</string>
+    <string name="controller_steer_limit">Safe steering</string>
+    <string name="controller_steer_limit_max_speed">Max speed: %1$d km/h</string>
+    <string name="controller_steer_limit_reduction">Reduction: %1$d%%</string>
     <string name="controller_rear_view">Rear view</string>
     <string name="controller_front_view">Front view</string>
     <string name="controller_mute">Mute</string>

@@ -13,6 +13,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.FrameLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
@@ -150,18 +151,18 @@ class ControllerDriveActivity : AppCompatActivity() {
         val textDebugOverlay = findViewById<TextView>(R.id.textDebugOverlay)
         val textConnectionWarning = findViewById<TextView>(R.id.textConnectionWarning)
 
-        // Verbose log + FPS/latency numbers + the resolution picker + steer limit are
-        // diagnostic/rarely-needed, hidden unless "Debug mode" is on (MainActivity) -
-        // textConnectionWarning below stays visible regardless, that one's a safety
-        // signal, not a diagnostic.
+        // Verbose log + FPS/latency numbers + the resolution picker + steering-limit
+        // curve tuning are diagnostic/rarely-needed, hidden unless "Debug mode" is on
+        // (MainActivity) - textConnectionWarning below, and Safe steering itself,
+        // stay visible regardless: those are safety controls, not diagnostics.
         val qualitySection = findViewById<View>(R.id.qualitySection)
-        val buttonSteerLimitView = findViewById<View>(R.id.buttonSteerLimit)
+        val steerLimitConfigSection = findViewById<View>(R.id.steerLimitConfigSection)
         lifecycleScope.launch {
             val debugEnabled = ModePrefs(applicationContext).debugEnabled.first()
             logView.visibility = if (debugEnabled) View.VISIBLE else View.GONE
             textDebugOverlay.visibility = if (debugEnabled) View.VISIBLE else View.GONE
             qualitySection.visibility = if (debugEnabled) View.VISIBLE else View.GONE
-            buttonSteerLimitView.visibility = if (debugEnabled) View.VISIBLE else View.GONE
+            steerLimitConfigSection.visibility = if (debugEnabled) View.VISIBLE else View.GONE
         }
 
         fun updateDebugOverlay() {
@@ -285,6 +286,39 @@ class ControllerDriveActivity : AppCompatActivity() {
             controlLink.sendSteerLimit(steerLimitEnabled)
             buttonSteerLimit.backgroundTintList = if (steerLimitEnabled) activeTint else defaultSteerLimitTint
         }
+
+        val textSteerLimitMaxSpeed = findViewById<TextView>(R.id.textSteerLimitMaxSpeed)
+        val textSteerLimitReduction = findViewById<TextView>(R.id.textSteerLimitReduction)
+        val seekSteerLimitMaxSpeed = findViewById<SeekBar>(R.id.seekSteerLimitMaxSpeed)
+        val seekSteerLimitReduction = findViewById<SeekBar>(R.id.seekSteerLimitReduction)
+
+        // Matches VehicleActivity's own DEFAULT_MAX_SPEED_FOR_FULL_STEER_LIMIT_KMH/
+        // DEFAULT_MAX_STEER_REDUCTION_FRACTION - both sides start in agreement, so
+        // Safe steering works sensibly even if these sliders are never touched.
+        seekSteerLimitMaxSpeed.progress = 20
+        seekSteerLimitReduction.progress = 60
+        textSteerLimitMaxSpeed.text = getString(R.string.controller_steer_limit_max_speed, seekSteerLimitMaxSpeed.progress)
+        textSteerLimitReduction.text = getString(R.string.controller_steer_limit_reduction, seekSteerLimitReduction.progress)
+
+        fun sendSteerLimitConfig() {
+            controlLink.sendSteerLimitConfig(seekSteerLimitMaxSpeed.progress.toFloat(), seekSteerLimitReduction.progress / 100f)
+        }
+        seekSteerLimitMaxSpeed.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                textSteerLimitMaxSpeed.text = getString(R.string.controller_steer_limit_max_speed, progress)
+                if (fromUser) sendSteerLimitConfig()
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+        seekSteerLimitReduction.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                textSteerLimitReduction.text = getString(R.string.controller_steer_limit_reduction, progress)
+                if (fromUser) sendSteerLimitConfig()
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
 
         val checkAutoQuality = findViewById<CheckBox>(R.id.checkAutoQuality)
         checkAutoQuality.setOnCheckedChangeListener { _, checked -> autoQuality = checked }

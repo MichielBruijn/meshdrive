@@ -65,8 +65,8 @@ class VehicleActivity : AppCompatActivity() {
 
     companion object {
         private const val YGGDRASIL_PACKAGE = "eu.neilalexander.yggdrasil"
-        private const val MAX_SPEED_FOR_FULL_STEER_LIMIT_KMH = 20f
-        private const val MAX_STEER_REDUCTION_FRACTION = 0.6f
+        private const val DEFAULT_MAX_SPEED_FOR_FULL_STEER_LIMIT_KMH = 20f
+        private const val DEFAULT_MAX_STEER_REDUCTION_FRACTION = 0.6f
     }
 
     private var service: VehicleForegroundService? = null
@@ -92,6 +92,11 @@ class VehicleActivity : AppCompatActivity() {
     // toggle is never missed/stale across those threads.
     @Volatile private var telemetryEnabled = false
     @Volatile private var speedLimitEnabled = false
+
+    // Tunable from the controller's debug sliders (ControlFrame.SteerLimitConfig) -
+    // see applySpeedSteerLimit() for what these actually do.
+    @Volatile private var maxSpeedForFullSteerLimitKmh = DEFAULT_MAX_SPEED_FOR_FULL_STEER_LIMIT_KMH
+    @Volatile private var maxSteerReductionFraction = DEFAULT_MAX_STEER_REDUCTION_FRACTION
 
     // Read from the control-handling coroutine (Dispatchers.IO), written from the
     // LocationListener callback (main thread, per requestLocationUpdates below).
@@ -154,13 +159,14 @@ class VehicleActivity : AppCompatActivity() {
     /**
      * Scales steer deflection down as speed increases, symmetric around center -
      * the app-side, real-speed equivalent of the firmware's own
-     * applySteerOutput()/STEERING_LIMIT. The two constants below are a starting
-     * point (full steering below ~walking pace, keeping 40% of range at/above a
-     * brisk 20 km/h) - tune freely, there's nothing else tied to these numbers.
+     * applySteerOutput()/STEERING_LIMIT. maxSpeedForFullSteerLimitKmh/
+     * maxSteerReductionFraction default to a starting point (full steering below
+     * ~walking pace, keeping 40% of range at/above a brisk 20 km/h) and are tuned
+     * live from the controller's debug sliders (ControlFrame.SteerLimitConfig).
      */
     private fun applySpeedSteerLimit(steer: Float, speedKmh: Float): Float {
-        val speedFraction = (speedKmh / MAX_SPEED_FOR_FULL_STEER_LIMIT_KMH).coerceIn(0f, 1f)
-        val scale = 1f - speedFraction * MAX_STEER_REDUCTION_FRACTION
+        val speedFraction = (speedKmh / maxSpeedForFullSteerLimitKmh).coerceIn(0f, 1f)
+        val scale = 1f - speedFraction * maxSteerReductionFraction
         return steer * scale
     }
 
@@ -386,6 +392,11 @@ class VehicleActivity : AppCompatActivity() {
                             }
                             is ControlFrame.Decoded.Telemetry -> {
                                 // Vehicle -> controller only, never sent to the vehicle.
+                            }
+                            is ControlFrame.Decoded.SteerLimitConfig -> {
+                                log("steer limit config: max ${decoded.maxSpeedKmh} km/h, reduce ${(decoded.reductionFraction * 100).toInt()}%")
+                                maxSpeedForFullSteerLimitKmh = decoded.maxSpeedKmh
+                                maxSteerReductionFraction = decoded.reductionFraction
                             }
                             is ControlFrame.Decoded.Ping, is ControlFrame.Decoded.Pong -> {
                                 // Handled transparently inside ControlLink.listen() - never reaches here.
