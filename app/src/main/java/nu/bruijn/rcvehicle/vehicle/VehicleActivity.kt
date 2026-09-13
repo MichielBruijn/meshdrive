@@ -120,13 +120,19 @@ class VehicleActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Nobody touches this phone's own screen while driving - it's mounted on
-        // the vehicle, the driver is looking at the controller phone instead.
-        // Without this, the display timeout locks it, Android revokes camera
-        // access from the now-backgrounded app, and VideoSender dies mid-stream
-        // (confirmed on real hardware as onError firing "camera error: 3" -
-        // ERROR_CAMERA_DISABLED - after a delay matching the screen timeout).
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Deliberately NOT forcing the screen to stay on (FLAG_KEEP_SCREEN_ON) here
+        // anymore: letting this phone's own timeout lock it is fine, and per direct
+        // request even desirable - mounted on the vehicle, unattended, a locked
+        // screen means nobody can just pick it up and stop the app without
+        // unlocking it first. This used to be needed because the display timeout
+        // locking the phone made Android revoke camera access from the now-
+        // backgrounded app (confirmed on real hardware: onError fired "camera
+        // error: 3" - ERROR_CAMERA_DISABLED - right on schedule with the screen
+        // timeout) - fixed properly since by declaring VehicleForegroundService's
+        // foregroundServiceType as camera+microphone (see its manifest entry and
+        // doc), which is what actually keeps a locked/backgrounded app's camera and
+        // mic access alive, plus a wake lock so the CPU doesn't doze in the
+        // meantime.
         setContentView(R.layout.activity_vehicle)
 
         ContextCompat.registerReceiver(
