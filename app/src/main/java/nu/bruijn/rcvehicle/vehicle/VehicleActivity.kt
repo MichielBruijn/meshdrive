@@ -31,6 +31,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import nu.bruijn.rcvehicle.R
+import nu.bruijn.rcvehicle.common.InternetNetworkBinder
 import nu.bruijn.rcvehicle.common.QrCode
 import nu.bruijn.rcvehicle.common.YggdrasilAddress
 import nu.bruijn.rcvehicle.control.ControlFrame
@@ -385,7 +386,8 @@ class VehicleActivity : AppCompatActivity() {
                     return@launch
                 }
                 textUpdateStatus.text = "Board is v$currentVersion, checking GitHub…"
-                val release = withContext(Dispatchers.IO) { FirmwareUpdater.fetchLatestRelease() }
+                val internet = withContext(Dispatchers.IO) { getInternetNetwork() }
+                val release = withContext(Dispatchers.IO) { FirmwareUpdater.fetchLatestRelease(internet) }
                 buttonCheckUpdate.isEnabled = true
                 when {
                     release == null -> textUpdateStatus.text = "Board v$currentVersion - could not reach GitHub"
@@ -411,7 +413,8 @@ class VehicleActivity : AppCompatActivity() {
             buttonCheckUpdate.isEnabled = false
             textUpdateStatus.text = "Downloading v${release.version}…"
             lifecycleScope.launch {
-                val bytes = withContext(Dispatchers.IO) { FirmwareUpdater.download(release.downloadUrl) }
+                val internet = withContext(Dispatchers.IO) { getInternetNetwork() }
+                val bytes = withContext(Dispatchers.IO) { FirmwareUpdater.download(release.downloadUrl, internet) }
                 if (bytes == null) {
                     textUpdateStatus.text = "Download failed"
                     buttonInstallUpdate.isEnabled = true
@@ -452,6 +455,20 @@ class VehicleActivity : AppCompatActivity() {
 
     private fun isPackageInstalled(packageName: String): Boolean =
         runCatching { packageManager.getPackageInfo(packageName, 0) }.isSuccess
+
+    /**
+     * Null on timeout (best-effort - callers just fall back to whatever the phone's
+     * current default route is, matching the old unbound-client behavior). See
+     * InternetNetworkBinder's doc for why this exists at all: joining the ESP32's
+     * own AP for the wifi update path below can silently become the phone's default
+     * route, breaking anything that needs *real* internet (the GitHub check/download)
+     * with no obvious reason why from the error alone.
+     */
+    private suspend fun getInternetNetwork() = withTimeoutOrNull(10_000) {
+        InternetNetworkBinder(applicationContext).observe()
+            .filterIsInstance<InternetNetworkBinder.State.Available>()
+            .first().network
+    }
 
     private fun maybeStartVideo(controllerAddress: InetAddress, log: (String) -> Unit) {
         if (videoStarted) return
