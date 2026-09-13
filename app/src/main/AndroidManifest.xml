@@ -41,13 +41,20 @@
                 android:resource="@xml/device_filter" />
         </activity>
 
+        <!-- configChanges: both activities own live state (USB/UDP sockets, camera
+             capture, video encode/decode) that must survive a rotation. Without
+             this, Android's default destroy-and-recreate-the-Activity behavior on
+             orientation change tore all of that down - confirmed on real hardware
+             as "turning the vehicle phone stops the video on the controller". -->
         <activity
             android:name=".controller.ControllerActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
 
         <activity
             android:name=".vehicle.VehicleActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
 
         <service
             android:name=".vehicle.VehicleForegroundService"
