@@ -4,10 +4,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -46,6 +48,17 @@ class VehicleForegroundService : Service() {
     private var espIp: String = "192.168.4.1"
     private var networkJob: Job? = null
 
+    // Screen timeout locking the vehicle phone must not stop it sending - a real,
+    // reported requirement, not a hypothetical one. A correctly-typed foreground
+    // service (see the manifest: camera+microphone alongside connectedDevice, plus
+    // the matching FOREGROUND_SERVICE_CAMERA/MICROPHONE permissions - both required
+    // since Android 14 to use those APIs from a backgrounded process at all) covers
+    // the "is this app allowed to touch the camera/mic right now" question, but not
+    // CPU sleep: without a wake lock, Doze can still defer/throttle the UDP sends
+    // and capture callbacks once the screen's been off for a while. Held for the
+    // whole time this service is alive, released in onDestroy.
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onCreate() {
         super.onCreate()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -57,6 +70,12 @@ class VehicleForegroundService : Service() {
         networkBinder = EspWifiNetworkBinder(applicationContext)
         servoBridge.onStateChange = { status -> onStatus?.invoke(status) }
         usbServoBridge.onStateChange = { status -> onStatus?.invoke(status) }
+
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MeshDrive:vehicle").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -113,6 +132,8 @@ class VehicleForegroundService : Service() {
         servoBridge.stop()
         usbServoBridge.stop()
         serviceScope.cancel()
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
         super.onDestroy()
     }
 }
