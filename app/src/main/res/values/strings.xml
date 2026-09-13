@@ -30,6 +30,8 @@
     <string name="controller_steer_limit">Limit steering</string>
     <string name="controller_rear_view">Rear view</string>
     <string name="controller_front_view">Front view</string>
+    <string name="controller_mute">Mute</string>
+    <string name="controller_unmute">Unmute</string>
     <string name="controller_record">Record</string>
     <string name="controller_recording">Stop recording</string>
     <string name="controller_quality_low">Low</string>

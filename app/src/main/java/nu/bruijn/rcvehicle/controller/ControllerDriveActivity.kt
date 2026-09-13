@@ -296,6 +296,14 @@ class ControllerDriveActivity : AppCompatActivity() {
             buttonRearView.backgroundTintList = if (rearViewActive) activeTint else defaultRearViewTint
         }
 
+        val buttonMute = findViewById<Button>(R.id.buttonMute)
+        val defaultMuteTint = buttonMute.backgroundTintList
+        buttonMute.setOnClickListener {
+            audioReceiver.muted = !audioReceiver.muted
+            buttonMute.text = getString(if (audioReceiver.muted) R.string.controller_unmute else R.string.controller_mute)
+            buttonMute.backgroundTintList = if (audioReceiver.muted) activeTint else defaultMuteTint
+        }
+
         setUpRecordButton(::log)
 
         findViewById<SliderView>(R.id.sliderSteer).apply {

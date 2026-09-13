@@ -64,6 +64,19 @@
         android:layout_margin="8dp"
         android:text="@string/controller_rear_view" />
 
+    <!-- Mutes live audio playback only - see AudioReceiver.muted's doc. Always
+         visible, not debug-only: same category as rear view, a normal driving
+         control. -->
+    <Button
+        android:id="@+id/buttonMute"
+        style="?android:attr/buttonStyleSmall"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="8dp"
+        android:layout_marginTop="56dp"
+        android:text="@string/controller_mute" />
+
     <!-- Debug-only, same as the resolution picker below - not a normal driving control. -->
     <Button
         android:id="@+id/buttonSteerLimit"

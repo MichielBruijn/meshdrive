@@ -40,6 +40,10 @@ class AudioReceiver {
     @Volatile var hasReceivedAudio = false
         private set
 
+    /** Silences live playback only - decoding and (if a recording is active) the
+     * recorded track are unaffected, same as muting a phone call doesn't stop it. */
+    @Volatile var muted = false
+
     private var recorder: AudioRecorderTrack? = null
 
     fun startRecording(session: nu.bruijn.rcvehicle.video.MuxerSession) {
@@ -141,7 +145,7 @@ class AudioReceiver {
             var outIndex = codec.dequeueOutputBuffer(info, 0)
             while (outIndex >= 0) {
                 val outputBuffer = codec.getOutputBuffer(outIndex)
-                if (outputBuffer != null && info.size > 0) {
+                if (outputBuffer != null && info.size > 0 && !muted) {
                     val pcm = ByteArray(info.size)
                     outputBuffer.get(pcm)
                     audioTrack?.write(pcm, 0, pcm.size)
