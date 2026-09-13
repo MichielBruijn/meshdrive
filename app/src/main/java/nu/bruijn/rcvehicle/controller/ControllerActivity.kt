@@ -12,6 +12,8 @@ import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import nu.bruijn.rcvehicle.R
@@ -37,6 +39,14 @@ class ControllerActivity : AppCompatActivity() {
     private val tickHandler = Handler(Looper.getMainLooper())
     private var tickRunnable: Runnable? = null
     private var seq = 0
+
+    // Must be registered unconditionally at construction time (Activity Result API
+    // requirement, before onCreate/onStart), not inside onCreate's click listener.
+    private val qrScanLauncher = registerForActivityResult(ScanContract()) { result ->
+        result.contents?.let { scanned ->
+            findViewById<EditText>(R.id.editVehicleAddress).setText(scanned.trim())
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -81,6 +91,16 @@ class ControllerActivity : AppCompatActivity() {
                 videoReceiver.stop()
             }
         })
+
+        findViewById<Button>(R.id.buttonScanQr).setOnClickListener {
+            qrScanLauncher.launch(
+                ScanOptions()
+                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    .setPrompt("Scan de QR-code op het scherm van de voertuig-telefoon")
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false)
+            )
+        }
 
         findViewById<Button>(R.id.buttonConnectRtc).setOnClickListener {
             val address = editAddress.text.toString().trim()

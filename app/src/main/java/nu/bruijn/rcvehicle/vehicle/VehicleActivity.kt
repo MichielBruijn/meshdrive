@@ -13,6 +13,7 @@ import android.os.Looper
 import android.util.Log
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -23,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import nu.bruijn.rcvehicle.R
+import nu.bruijn.rcvehicle.common.QrCode
 import nu.bruijn.rcvehicle.common.YggdrasilAddress
 import nu.bruijn.rcvehicle.control.ControlLink
 import nu.bruijn.rcvehicle.video.VideoPacket
@@ -98,12 +100,14 @@ class VehicleActivity : AppCompatActivity() {
             service?.connectToEsp(editIp.text.toString().trim())
         }
 
+        val imageQr = findViewById<ImageView>(R.id.imageYggdrasilQr)
         lifecycleScope.launch {
             val address = withContext(Dispatchers.IO) { YggdrasilAddress.detect() }
-            textOwnAddress.text = if (address != null) {
-                "Eigen Yggdrasil-adres: $address"
+            if (address != null) {
+                textOwnAddress.text = "Eigen Yggdrasil-adres: $address"
+                imageQr.setImageBitmap(QrCode.encode(address))
             } else {
-                "Eigen Yggdrasil-adres: niet gevonden (Yggdrasil-app actief?)"
+                textOwnAddress.text = "Eigen Yggdrasil-adres: niet gevonden (Yggdrasil-app actief?)"
             }
         }
 

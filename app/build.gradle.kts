@@ -51,4 +51,6 @@ dependencies {
     // case a future library fix makes it viable again.
     implementation("io.getstream:stream-webrtc-android:1.3.8")
     implementation("com.github.mik3y:usb-serial-for-android:3.11.0")
+    implementation("com.google.zxing:core:3.5.3") // QR generation (vehicle side)
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0") // QR scanning (controller side)
 }
