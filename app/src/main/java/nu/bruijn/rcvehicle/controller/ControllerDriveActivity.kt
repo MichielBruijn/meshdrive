@@ -617,14 +617,14 @@ class ControllerDriveActivity : AppCompatActivity() {
                 return null
             }
             val muxer = android.media.MediaMuxer(pfd.fileDescriptor, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            return RecordingTarget(MuxerSession(muxer), uri, pfd, "Movies/MeshDrive/$fileName")
+            return RecordingTarget(MuxerSession(muxer, currentRotation), uri, pfd, "Movies/MeshDrive/$fileName")
         }
 
         val dir = getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES) ?: return null
         dir.mkdirs()
         val file = java.io.File(dir, fileName)
         val muxer = android.media.MediaMuxer(file.absolutePath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        return RecordingTarget(MuxerSession(muxer), null, null, file.absolutePath)
+        return RecordingTarget(MuxerSession(muxer, currentRotation), null, null, file.absolutePath)
     }
 
     /**

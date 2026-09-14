@@ -26,13 +26,28 @@ import java.nio.ByteBuffer
  * track that will never come. Even then, [AUDIO_GRACE_MS] is a hard backstop:
  * if audio doesn't show up promptly, start video-only rather than record
  * nothing at all.
+ *
+ * [rotationDegrees] is set as the file's own orientation hint (MediaMuxer's
+ * tkhd rotation matrix, honored by normal video players) - confirmed on real
+ * hardware as a real bug: the vehicle's rotation only ever got applied as a
+ * TextureView transform for the LIVE view, never touched the actual encoded
+ * pixels, so a saved recording opened sideways in any player that doesn't know
+ * about this app's own rotation-in-the-packet-header protocol. Fixed at
+ * whatever rotation was live when recording started - MediaMuxer only supports
+ * one hint for the whole file, set once before start(), so a mid-recording
+ * rotation change (e.g. physically adjusting the mount) won't retroactively fix
+ * itself, same trade-off ordinary camera apps make.
  */
-class MuxerSession(private val muxer: MediaMuxer) {
+class MuxerSession(private val muxer: MediaMuxer, rotationDegrees: Int) {
     private val lock = Any()
     private var videoTrack = -1
     private var audioTrack = -1
     private var started = false
     private var videoTrackAddedAtMs = 0L
+
+    init {
+        muxer.setOrientationHint(rotationDegrees)
+    }
 
     /** Set before the first frame is fed - only true if audio was already flowing. */
     var expectAudio = false
