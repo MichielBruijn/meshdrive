@@ -9,7 +9,12 @@ package nu.bruijn.rcvehicle.video
  * automatically from decoded FPS when bandwidth is tight.
  */
 enum class VideoQuality(val width: Int, val height: Int, val bitrate: Int, val label: String) {
-    LOW(320, 240, 300_000, "Low"),
+    // Was 320x240 @ 300kbps - confirmed on real hardware that even that looked
+    // noticeably better than needed for driving-by-video, per direct feedback.
+    // Dropped hard (4x fewer pixels, 3x less bitrate) - genuinely small enough to
+    // matter for a tight-bandwidth fallback link (ESP-NOW-class, ~1 Mbps ceiling),
+    // not just a marginal trim.
+    LOW(160, 120, 100_000, "Low"),
     MEDIUM(640, 480, 800_000, "Medium"),
     // Was 960x720 - confirmed on real hardware that this non-standard size fails to
     // even start on the Fairphone 5's camera (capture session configuration rejected
