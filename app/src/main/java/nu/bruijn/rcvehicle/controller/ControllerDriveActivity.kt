@@ -307,6 +307,7 @@ class ControllerDriveActivity : AppCompatActivity() {
                             runOnUiThread {
                                 lastTelemetry = telemetry
                                 updateTelemetryOverlay()
+                                if (isRecording) gpxTrack?.addPoint(telemetry)
                             }
                         },
                     )
@@ -585,6 +586,8 @@ class ControllerDriveActivity : AppCompatActivity() {
     private var recordingUri: android.net.Uri? = null
     private var recordingPfd: android.os.ParcelFileDescriptor? = null
     private var muxerSession: MuxerSession? = null
+    private var gpxTrack: GpxTrack? = null
+    private var gpxBaseName: String? = null
 
     /** Holds everything one recording attempt needs, whichever way it was created. */
     private class RecordingTarget(
@@ -592,6 +595,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         val uri: android.net.Uri?,
         val pfd: android.os.ParcelFileDescriptor?,
         val displayPath: String,
+        val baseName: String,
     )
 
     /**
@@ -606,8 +610,9 @@ class ControllerDriveActivity : AppCompatActivity() {
      * rare on real hardware at this point.
      */
     private fun createRecordingTarget(): RecordingTarget? {
-        val fileName = "meshdrive_" +
-            java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date()) + ".mp4"
+        val baseName = "meshdrive_" +
+            java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+        val fileName = "$baseName.mp4"
 
         // Whatever GPS fix is on hand right when recording starts (or none, if the
         // GPS/speed overlay was never turned on or hasn't got a fix yet) - see
@@ -634,14 +639,44 @@ class ControllerDriveActivity : AppCompatActivity() {
                 return null
             }
             val muxer = android.media.MediaMuxer(pfd.fileDescriptor, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            return RecordingTarget(MuxerSession(muxer, currentRotation, location), uri, pfd, "Movies/MeshDrive/$fileName")
+            return RecordingTarget(MuxerSession(muxer, currentRotation, location), uri, pfd, "Movies/MeshDrive/$fileName", baseName)
         }
 
         val dir = getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES) ?: return null
         dir.mkdirs()
         val file = java.io.File(dir, fileName)
         val muxer = android.media.MediaMuxer(file.absolutePath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        return RecordingTarget(MuxerSession(muxer, currentRotation, location), null, null, file.absolutePath)
+        return RecordingTarget(MuxerSession(muxer, currentRotation, location), null, null, file.absolutePath, baseName)
+    }
+
+    /**
+     * Writes [track] as a .gpx sidecar next to the recording it belongs to
+     * (RELATIVE_PATH matches createRecordingTarget()'s video exactly) - see
+     * GpxTrack's doc. No-op if nothing was ever added to it (telemetry never
+     * flowed during this recording - most commonly because the GPS/speed overlay
+     * checkbox was off).
+     */
+    private fun saveGpxTrack(track: GpxTrack, baseName: String, log: (String) -> Unit) {
+        if (track.isEmpty) return
+        val bytes = track.toGpxXml().toByteArray(Charsets.UTF_8)
+        val fileName = "$baseName.gpx"
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Files.FileColumns.DISPLAY_NAME, fileName)
+                    put(android.provider.MediaStore.Files.FileColumns.MIME_TYPE, "application/gpx+xml")
+                    put(android.provider.MediaStore.Files.FileColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_MOVIES + "/MeshDrive")
+                }
+                val uri = contentResolver.insert(android.provider.MediaStore.Files.getContentUri("external"), values) ?: return
+                contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+            } else {
+                val dir = getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES) ?: return
+                java.io.File(dir, fileName).writeBytes(bytes)
+            }
+            log("gpx track saved: $fileName")
+        } catch (e: Exception) {
+            log("gpx save failed: ${e.message}")
+        }
     }
 
     /**
@@ -666,6 +701,8 @@ class ControllerDriveActivity : AppCompatActivity() {
                 recordingUri = target.uri
                 recordingPfd = target.pfd
                 recordingDisplayPath = target.displayPath
+                gpxTrack = GpxTrack(target.baseName)
+                gpxBaseName = target.baseName
                 isRecording = true
                 buttonRecord.setImageResource(R.drawable.record_button_active)
                 log("recording to ${target.displayPath}${if (target.session.expectAudio) " (with audio)" else ""}")
@@ -709,6 +746,9 @@ class ControllerDriveActivity : AppCompatActivity() {
         }
         recordingUri = null
         isRecording = false
+        gpxTrack?.let { track -> gpxBaseName?.let { saveGpxTrack(track, it, log) } }
+        gpxTrack = null
+        gpxBaseName = null
         findViewById<ImageButton>(R.id.buttonRecord).setImageResource(R.drawable.record_button_idle)
         log(if (wroteAnything) "recording saved: $recordingDisplayPath" else "recording discarded - no video was received")
     }
