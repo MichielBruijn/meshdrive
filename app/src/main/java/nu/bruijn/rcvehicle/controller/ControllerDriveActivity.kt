@@ -296,15 +296,18 @@ class ControllerDriveActivity : AppCompatActivity() {
                         },
                     )
 
-                    // Re-apply Safe steering to whichever vehicle this is, since a
-                    // fresh vehicle doesn't otherwise know it was on last session -
-                    // see ModePrefs.safeSteeringEnabled's doc.
+                    // Re-apply Safe steering/GPS-speed telemetry to whichever vehicle
+                    // this is, since a fresh vehicle doesn't otherwise know either
+                    // was on last session - see ModePrefs.safeSteeringEnabled's doc.
                     if (modePrefs.safeSteeringEnabled.first()) {
                         controlLink.sendSteerLimit(true)
                         controlLink.sendSteerLimitConfig(
                             modePrefs.safeSteeringMaxSpeedKmh.first().toFloat(),
                             modePrefs.safeSteeringReductionPercent.first() / 100f,
                         )
+                    }
+                    if (modePrefs.telemetryEnabled.first()) {
+                        controlLink.sendTelemetryEnable(true)
                     }
                 } catch (e: Exception) {
                     log("connect failed: ${e::class.simpleName}: ${e.message}")
@@ -378,11 +381,13 @@ class ControllerDriveActivity : AppCompatActivity() {
             setQuality(VideoQuality.HIGH.ordinal)
         }
 
-        findViewById<CheckBox>(R.id.checkTelemetry).setOnCheckedChangeListener { _, checked ->
+        val checkTelemetry = findViewById<CheckBox>(R.id.checkTelemetry)
+        checkTelemetry.setOnCheckedChangeListener { _, checked ->
             telemetryEnabled = checked
             controlLink.sendTelemetryEnable(checked)
             if (!checked) lastTelemetry = null
             updateDebugOverlay()
+            lifecycleScope.launch { modePrefs.setTelemetryEnabled(checked) }
         }
 
         val buttonRearView = findViewById<Button>(R.id.buttonRearView)
@@ -414,14 +419,14 @@ class ControllerDriveActivity : AppCompatActivity() {
             lifecycleScope.launch { modePrefs.setAudioMuted(audioReceiver.muted) }
         }
 
-        // Restores Auto quality/Safe steering/Mute from last session - per direct
-        // request ("onthou..."). Runs after the views/listeners above exist, so
-        // setting .isChecked/.progress here naturally drives their existing update
-        // logic (label text, tint) instead of duplicating it. Safe steering's own
-        // ControlFrame messages are re-sent once actually connected (see the
-        // controlLink.connect() block above) - this part only restores local UI
-        // state and audioReceiver.muted/micSender, which don't need the vehicle to
-        // know anything.
+        // Restores Auto quality/Safe steering/Mute/GPS-speed overlay from last
+        // session - per direct request ("onthou..."). Runs after the views/listeners
+        // above exist, so setting .isChecked/.progress here naturally drives their
+        // existing update logic (label text, tint) instead of duplicating it. Safe
+        // steering's and telemetry's own ControlFrame messages are re-sent once
+        // actually connected (see the controlLink.connect() block above) - this part
+        // only restores local UI state and audioReceiver.muted/micSender, which
+        // don't need the vehicle to know anything.
         lifecycleScope.launch {
             autoQuality = modePrefs.autoQualityEnabled.first()
             checkAutoQuality.isChecked = autoQuality
@@ -431,6 +436,9 @@ class ControllerDriveActivity : AppCompatActivity() {
 
             seekSteerLimitMaxSpeed.progress = modePrefs.safeSteeringMaxSpeedKmh.first()
             seekSteerLimitReduction.progress = modePrefs.safeSteeringReductionPercent.first()
+
+            telemetryEnabled = modePrefs.telemetryEnabled.first()
+            checkTelemetry.isChecked = telemetryEnabled
 
             audioReceiver.muted = modePrefs.audioMuted.first()
             applyMuteUi()
