@@ -15,6 +15,15 @@ import java.nio.ByteBuffer
  * stream it's decoding rather than needing a separate, loss-prone message channel)
  * - the vehicle's device orientation, so the controller can rotate its display to
  * match instead of always showing the camera's raw (fixed sensor mount) orientation.
+ *
+ * Sent as a quarter-turn count (0-3), not the raw degree value: confirmed on real
+ * hardware as a real bug - 270 doesn't fit in a byte (270.toByte() silently wraps
+ * to 14, since 270 - 256 = 14), so whenever the true rotation was 270° the
+ * receiver got a nonsense value instead, fell through updateVideoTransform()'s
+ * `when` to its 0°/identity case, and the video looked stuck at the wrong
+ * orientation specifically in that one case. Rotation here is always a multiple
+ * of 90 (VideoSender's accelerometer snapping), so dividing by 90 losslessly fits
+ * every real value (0/90/180/270 -> 0/1/2/3) with no range issue at all.
  */
 object VideoPacket {
     const val PORT = 7862
@@ -23,6 +32,7 @@ object VideoPacket {
 
     fun fragment(frameId: Int, data: ByteArray, rotationDegrees: Int): List<ByteArray> {
         val fragCount = (data.size + MAX_PAYLOAD - 1) / MAX_PAYLOAD
+        val rotationQuarterTurns = (rotationDegrees / 90) % 4
         return (0 until fragCount).map { i ->
             val start = i * MAX_PAYLOAD
             val end = minOf(start + MAX_PAYLOAD, data.size)
@@ -31,7 +41,7 @@ object VideoPacket {
             buf.putInt(frameId)
             buf.putShort(i.toShort())
             buf.putShort(fragCount.toShort())
-            buf.put(rotationDegrees.toByte())
+            buf.put(rotationQuarterTurns.toByte())
             buf.put(data, start, payload)
             buf.array()
         }
@@ -45,7 +55,7 @@ object VideoPacket {
         val frameId = buf.int
         val fragIndex = buf.short.toInt() and 0xFFFF
         val fragCount = buf.short.toInt() and 0xFFFF
-        val rotationDegrees = buf.get().toInt() and 0xFF
+        val rotationDegrees = (buf.get().toInt() and 0xFF) * 90
         return Header(frameId, fragIndex, fragCount, rotationDegrees)
     }
 
