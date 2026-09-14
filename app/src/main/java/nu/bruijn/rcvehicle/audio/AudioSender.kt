@@ -33,6 +33,16 @@ import java.net.InetAddress
  * the encoder's callback HandlerThread is recreated each start() rather than
  * reused, since a HandlerThread that's been quitSafely()'d can't take a new
  * Looper-bound callback afterward.
+ *
+ * [lock] guards against a real, confirmed-on-hardware crash: stop() releasing
+ * audioRecord/encoder from the caller's thread while the encoder's own callback
+ * (running on its HandlerThread) is mid-call into those same objects - caught
+ * three different ways in one crash log (IllegalStateException from getInputBuffer/
+ * queueInputBuffer "during stop()", and a native SIGSEGV inside AudioRecord::read()
+ * itself). Same class of bug as MuxerSession's doc, different API. stop() blocks on
+ * the lock before tearing anything down, so it either waits out an in-flight
+ * callback or - once [stopped] is true - every later callback invocation is a
+ * guaranteed no-op before it touches anything.
  */
 class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) {
     private var audioRecord: AudioRecord? = null
@@ -42,6 +52,8 @@ class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) 
     private var remotePort: Int = 0
     private var seq = 0
     private var audioThread: HandlerThread? = null
+    private val lock = Any()
+    private var stopped = true
 
     var onError: ((String) -> Unit)? = null
 
@@ -80,23 +92,29 @@ class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) 
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
         codec.setCallback(object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
-                val inputBuffer = codec.getInputBuffer(index) ?: return
-                val read = audioRecord?.read(inputBuffer, inputBuffer.capacity()) ?: -1
-                if (read > 0) {
-                    codec.queueInputBuffer(index, 0, read, System.nanoTime() / 1000, 0)
-                } else {
-                    codec.queueInputBuffer(index, 0, 0, 0, 0)
+                synchronized(lock) {
+                    if (stopped) return
+                    val inputBuffer = codec.getInputBuffer(index) ?: return
+                    val read = audioRecord?.read(inputBuffer, inputBuffer.capacity()) ?: -1
+                    if (read > 0) {
+                        codec.queueInputBuffer(index, 0, read, System.nanoTime() / 1000, 0)
+                    } else {
+                        codec.queueInputBuffer(index, 0, 0, 0, 0)
+                    }
                 }
             }
 
             override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-                val buffer = codec.getOutputBuffer(index)
-                if (buffer != null && info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                    val data = ByteArray(info.size)
-                    buffer.get(data)
-                    sendFrame(data)
+                synchronized(lock) {
+                    if (stopped) return
+                    val buffer = codec.getOutputBuffer(index)
+                    if (buffer != null && info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                        val data = ByteArray(info.size)
+                        buffer.get(data)
+                        sendFrame(data)
+                    }
+                    codec.releaseOutputBuffer(index, false)
                 }
-                codec.releaseOutputBuffer(index, false)
             }
 
             override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
@@ -110,6 +128,7 @@ class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) 
         codec.start()
         encoder = codec
 
+        synchronized(lock) { stopped = false }
         record.startRecording()
     }
 
@@ -125,6 +144,11 @@ class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) 
     }
 
     fun stop() {
+        // Blocks until any in-flight onInputBufferAvailable/onOutputBufferAvailable
+        // call has finished (or, once this returns, guarantees every future one is a
+        // no-op) before anything below touches audioRecord/encoder - see the class
+        // doc's [lock].
+        synchronized(lock) { stopped = true }
         audioRecord?.let {
             try {
                 it.stop()
