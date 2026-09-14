@@ -64,18 +64,23 @@
         android:layout_margin="8dp"
         android:text="@string/controller_rear_view" />
 
-    <!-- Mutes live audio playback only - see AudioReceiver.muted's doc. Always
-         visible, not debug-only: same category as rear view, a normal driving
-         control. -->
-    <Button
+    <!-- Mutes both directions of the mic link - see the Mute button's doc
+         (ControllerDriveActivity) for why one icon covers both. Always visible,
+         not debug-only: same category as rear view, a normal driving control.
+         Icon-only (speaker / speaker-with-slash, ic_lock_silent_mode{,_off} -
+         standard AOSP icons, no new asset needed) on a dark scrim so it stays
+         visible over bright video. -->
+    <ImageButton
         android:id="@+id/buttonMute"
-        style="?android:attr/buttonStyleSmall"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top|start"
-        android:layout_marginStart="8dp"
-        android:layout_marginTop="56dp"
-        android:text="@string/controller_mute" />
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="8dp"
+        android:background="@drawable/icon_button_bg"
+        android:src="@android:drawable/ic_lock_silent_mode_off"
+        android:contentDescription="@string/controller_mute"
+        android:padding="10dp"
+        android:scaleType="fitCenter" />
 
     <!-- Always visible, not debug-only: a real driving-safety control (speed-based
          steering limiter, VehicleActivity.applySpeedSteerLimit()), same category as
@@ -210,13 +215,19 @@
         android:textColor="@android:color/white"
         android:text="FPS: -- | Latency: -- ms" />
 
-    <Button
+    <!-- Icon-only: plain red dot (record_button_idle) while idle, red square
+         (record_button_active, standard "tap to stop") while recording - see
+         setUpRecordButton()'s doc for the toggle logic. -->
+    <ImageButton
         android:id="@+id/buttonRecord"
-        style="?android:attr/buttonStyleSmall"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
         android:layout_gravity="bottom|center_horizontal"
         android:layout_marginBottom="8dp"
-        android:text="@string/controller_record" />
+        android:background="@android:color/transparent"
+        android:src="@drawable/record_button_idle"
+        android:contentDescription="@string/controller_record"
+        android:padding="16dp"
+        android:scaleType="fitCenter" />
 
 </FrameLayout>

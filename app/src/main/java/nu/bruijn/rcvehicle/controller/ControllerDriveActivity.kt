@@ -16,6 +16,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -399,11 +400,12 @@ class ControllerDriveActivity : AppCompatActivity() {
         // stops transmitting this phone's own mic to the vehicle (startMic()/
         // micSender.stop()) - not two separate controls. audioReceiver.muted is the
         // single source of truth for "muted" (no separate flag to keep in sync).
-        val buttonMute = findViewById<Button>(R.id.buttonMute)
-        val defaultMuteTint = buttonMute.backgroundTintList
+        // Icon (speaker / speaker-with-slash) communicates state, so no tint needed.
+        val buttonMute = findViewById<ImageButton>(R.id.buttonMute)
         fun applyMuteUi() {
-            buttonMute.text = getString(if (audioReceiver.muted) R.string.controller_unmute else R.string.controller_mute)
-            buttonMute.backgroundTintList = if (audioReceiver.muted) activeTint else defaultMuteTint
+            buttonMute.setImageResource(
+                if (audioReceiver.muted) android.R.drawable.ic_lock_silent_mode else android.R.drawable.ic_lock_silent_mode_off,
+            )
         }
         buttonMute.setOnClickListener {
             audioReceiver.muted = !audioReceiver.muted
@@ -620,7 +622,7 @@ class ControllerDriveActivity : AppCompatActivity() {
      * for where the file actually goes.
      */
     private fun setUpRecordButton(log: (String) -> Unit) {
-        val buttonRecord = findViewById<Button>(R.id.buttonRecord)
+        val buttonRecord = findViewById<ImageButton>(R.id.buttonRecord)
         buttonRecord.setOnClickListener {
             if (!isRecording) {
                 val target = createRecordingTarget()
@@ -636,7 +638,7 @@ class ControllerDriveActivity : AppCompatActivity() {
                 recordingPfd = target.pfd
                 recordingDisplayPath = target.displayPath
                 isRecording = true
-                buttonRecord.text = getString(R.string.controller_recording)
+                buttonRecord.setImageResource(R.drawable.record_button_active)
                 log("recording to ${target.displayPath}${if (target.session.expectAudio) " (with audio)" else ""}")
             } else {
                 stopRecording(log)
@@ -678,7 +680,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         }
         recordingUri = null
         isRecording = false
-        findViewById<Button>(R.id.buttonRecord).text = getString(R.string.controller_record)
+        findViewById<ImageButton>(R.id.buttonRecord).setImageResource(R.drawable.record_button_idle)
         log(if (wroteAnything) "recording saved: $recordingDisplayPath" else "recording discarded - no video was received")
     }
 
