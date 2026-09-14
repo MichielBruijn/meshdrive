@@ -56,6 +56,17 @@ class VideoSender(private val context: Context) {
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var encoder: MediaCodec? = null
+
+    // Guards against the same real, confirmed-on-hardware crash AudioSender's own
+    // [lock] doc describes: closePipeline() releasing the encoder from the caller's
+    // thread (setQuality()/switchCamera(), off the ControlLink receive loop) while
+    // the encoder's own MediaCodec.Callback, running on cameraHandler, is mid-call
+    // into it. Lower-frequency here (quality/camera switches, not every mute
+    // toggle) than AudioSender's case, which is presumably why this hadn't been
+    // reported yet - same latent bug either way.
+    private val encoderLock = Any()
+    private var encoderStopped = true
+
     private var socket: DatagramSocket? = null
     private var remoteAddress: InetAddress? = null
     private var remotePort: Int = 0
@@ -168,13 +179,16 @@ class VideoSender(private val context: Context) {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {}
 
             override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-                val buffer = codec.getOutputBuffer(index)
-                if (buffer != null && info.size > 0) {
-                    val data = ByteArray(info.size)
-                    buffer.get(data)
-                    sendFrame(data)
+                synchronized(encoderLock) {
+                    if (encoderStopped) return
+                    val buffer = codec.getOutputBuffer(index)
+                    if (buffer != null && info.size > 0) {
+                        val data = ByteArray(info.size)
+                        buffer.get(data)
+                        sendFrame(data)
+                    }
+                    codec.releaseOutputBuffer(index, false)
                 }
-                codec.releaseOutputBuffer(index, false)
             }
 
             override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
@@ -188,6 +202,7 @@ class VideoSender(private val context: Context) {
         val inputSurface = codec.createInputSurface()
         codec.start()
         encoder = codec
+        synchronized(encoderLock) { encoderStopped = false }
 
         try {
             openCamera(inputSurface)
@@ -201,6 +216,10 @@ class VideoSender(private val context: Context) {
         captureSession = null
         cameraDevice?.close()
         cameraDevice = null
+        // Blocks until any in-flight onOutputBufferAvailable call has finished (or,
+        // once this returns, guarantees every future one is a no-op) before
+        // anything below touches encoder - see encoderLock's doc.
+        synchronized(encoderLock) { encoderStopped = true }
         encoder?.let {
             try {
                 it.stop()
