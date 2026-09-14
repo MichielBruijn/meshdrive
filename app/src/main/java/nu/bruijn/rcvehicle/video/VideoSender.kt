@@ -106,7 +106,20 @@ class VideoSender(private val context: Context) {
             if (sqrt(ax * ax + ay * ay) < 3.0f) return
             val ccw = (Math.toDegrees(atan2(ax.toDouble(), ay.toDouble())).toFloat() + 360f) % 360f
             val snappedCcw = (((ccw + 45f) / 90f).toInt() * 90) % 360
-            displayRotationDegrees = (sensorOrientation - snappedCcw + 360) % 360
+            // The front camera's sensor is mounted with the opposite handedness from
+            // the back one (standard on phones, normally compensated by mirroring the
+            // preview - deliberately NOT done here, see switchCamera()'s doc), which
+            // flips the sign this composes with snappedCcw. Confirmed on real
+            // hardware: with a single shared subtract-formula, front camera came out
+            // correct in portrait (where the two signs happen to agree) but upside
+            // down in both landscape orientations (where they don't) - the portrait/
+            // landscape split matching exactly which snappedCcw values the two signs
+            // agree/disagree at.
+            displayRotationDegrees = if (useFrontCamera) {
+                (sensorOrientation + snappedCcw) % 360
+            } else {
+                (sensorOrientation - snappedCcw + 360) % 360
+            }
         }
 
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
