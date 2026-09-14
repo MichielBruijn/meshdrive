@@ -214,13 +214,21 @@ class VehicleActivity : AppCompatActivity() {
         }
     }
 
-    // Catches the ESP32 being plugged in WHILE already on this screen - the manifest's
-    // USB_DEVICE_ATTACHED filter only launches a fresh MainActivity, which doesn't help
-    // if VehicleActivity is already in front.
+    // Catches the ESP32 being plugged in WHILE already on this screen (the manifest's
+    // USB_DEVICE_ATTACHED filter only launches a fresh MainActivity, which doesn't
+    // help if VehicleActivity is already in front) - and, just as importantly, being
+    // unplugged. Confirmed on real hardware as a real gap: nothing previously
+    // listened for DETACHED at all, so pulling the cable left port non-null and the
+    // "Connected" UI stuck showing green while writes silently failed one by one,
+    // instead of the app immediately reflecting reality and going quiet. Stopping
+    // here (rather than waiting for the next reconnect attempt to notice) is what
+    // makes the eventual reconnect clean instead of resuming into whatever half-
+    // torn-down state a stale port was left in.
     private val usbAttachReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED) {
-                service?.connectUsb()
+            when (intent.action) {
+                android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED -> service?.connectUsb()
+                android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED -> service?.usbServoBridge?.stop()
             }
         }
     }
@@ -245,7 +253,10 @@ class VehicleActivity : AppCompatActivity() {
         ContextCompat.registerReceiver(
             this,
             usbAttachReceiver,
-            android.content.IntentFilter(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED),
+            android.content.IntentFilter().apply {
+                addAction(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED)
+                addAction(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED)
+            },
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
 

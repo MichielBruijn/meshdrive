@@ -331,6 +331,9 @@ class UsbServoBridge(
         val wasConnected = port != null
         port?.let { runCatching { it.close() } }
         port = null
-        if (wasConnected) onConnected?.invoke(false)
+        if (wasConnected) {
+            onStateChange?.invoke("USB disconnected")
+            onConnected?.invoke(false)
+        }
     }
 }
