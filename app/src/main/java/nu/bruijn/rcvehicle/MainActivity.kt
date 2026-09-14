@@ -21,6 +21,24 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // The manifest's USB_DEVICE_ATTACHED intent-filter launches a fresh instance
+        // of this picker on EVERY USB attach, unconditionally - including while
+        // VehicleActivity is already open and driving, which has its own runtime
+        // receiver for exactly this (reconnecting the ESP32 without leaving that
+        // screen). Confirmed on real hardware as a real bug: reconnecting the cable
+        // mid-drive yanked the app back to this picker, landing on top of a
+        // VehicleActivity that was still alive underneath and already reconnecting
+        // itself. !isTaskRoot means this instance landed on top of something
+        // already running (true whenever the app was already open) - just get out
+        // of the way immediately and let that resume, rather than showing the
+        // picker over it. A genuine cold start (isTaskRoot true - the app wasn't
+        // running yet) still falls through to the normal picker below.
+        if (intent?.action == android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED && !isTaskRoot) {
+            finish()
+            return
+        }
+
         setContentView(R.layout.activity_main)
         modePrefs = ModePrefs(applicationContext)
 
