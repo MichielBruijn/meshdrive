@@ -82,9 +82,11 @@
         android:padding="10dp"
         android:scaleType="fitCenter" />
 
-    <!-- Always visible, not debug-only: a real driving-safety control (speed-based
-         steering limiter, VehicleActivity.applySpeedSteerLimit()), same category as
-         rear view/mute. The curve itself (below) is debug-only to tune. -->
+    <!-- Debug-only per direct request (moved back after briefly being always-
+         visible) - the toggle itself, same as its curve below (steerLimitConfigSection).
+         Its on/off state and curve still persist/re-apply via ModePrefs regardless
+         (ControllerDriveActivity), so Safe steering keeps working across a restart
+         even while this toggle isn't shown. -->
     <Button
         android:id="@+id/buttonSteerLimit"
         style="?android:attr/buttonStyleSmall"

@@ -176,18 +176,22 @@ class ControllerDriveActivity : AppCompatActivity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 1)
         }
 
-        // Verbose log + FPS/latency numbers + the resolution picker + steering-limit
-        // curve tuning are diagnostic/rarely-needed, hidden unless "Debug mode" is on
-        // (MainActivity) - textConnectionWarning below, and Safe steering itself,
-        // stay visible regardless: those are safety controls, not diagnostics.
+        // Verbose log + FPS/latency numbers + the resolution picker + Safe steering
+        // (toggle and curve both) are diagnostic/rarely-needed, hidden unless "Debug
+        // mode" is on (MainActivity) - textConnectionWarning below stays visible
+        // regardless, that one's a safety signal, not a diagnostic. Safe steering
+        // moved back into debug per direct request - still persists/re-applies via
+        // ModePrefs either way, so it keeps working even while its own toggle isn't shown.
         val qualitySection = findViewById<View>(R.id.qualitySection)
         val steerLimitConfigSection = findViewById<View>(R.id.steerLimitConfigSection)
+        val buttonSteerLimitView = findViewById<View>(R.id.buttonSteerLimit)
         lifecycleScope.launch {
             val debugEnabled = modePrefs.debugEnabled.first()
             logView.visibility = if (debugEnabled) View.VISIBLE else View.GONE
             textDebugOverlay.visibility = if (debugEnabled) View.VISIBLE else View.GONE
             qualitySection.visibility = if (debugEnabled) View.VISIBLE else View.GONE
             steerLimitConfigSection.visibility = if (debugEnabled) View.VISIBLE else View.GONE
+            buttonSteerLimitView.visibility = if (debugEnabled) View.VISIBLE else View.GONE
         }
 
         fun updateDebugOverlay() {
