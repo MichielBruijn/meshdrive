@@ -168,6 +168,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         val videoContainer = videoContainerView
         val textureVideo = textureVideoView
         val textDebugOverlay = findViewById<TextView>(R.id.textDebugOverlay)
+        val textTelemetryOverlay = findViewById<TextView>(R.id.textTelemetryOverlay)
         val textConnectionWarning = findViewById<TextView>(R.id.textConnectionWarning)
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
@@ -197,16 +198,26 @@ class ControllerDriveActivity : AppCompatActivity() {
         fun updateDebugOverlay() {
             val fpsText = if (lastFps >= 0) String.format("%.0f", lastFps) else "--"
             val latencyText = if (lastLatencyMs >= 0) lastLatencyMs.toString() else "--"
-            var text = "FPS: $fpsText | Latency: $latencyText ms"
-            if (telemetryEnabled) {
-                val t = lastTelemetry
-                text += if (t == null || !t.hasFix) {
-                    "\nGPS: no fix"
-                } else {
-                    "\n${String.format("%.1f", t.speedKmh)} km/h | ${String.format("%.5f", t.lat)}, ${String.format("%.5f", t.lon)}"
-                }
+            textDebugOverlay.text = "FPS: $fpsText | Latency: $latencyText ms"
+        }
+
+        // GPS/speed HUD on the video itself - its own overlay (per direct request,
+        // distinct from the small debug text above), visible whenever the debug-only
+        // checkTelemetry checkbox is on, regardless of general debug mode. Live only -
+        // recordings stay a direct remux with no per-frame drawing (real CPU/battery/
+        // quality cost that wasn't worth it, per direct decision).
+        fun updateTelemetryOverlay() {
+            if (!telemetryEnabled) {
+                textTelemetryOverlay.visibility = View.GONE
+                return
             }
-            textDebugOverlay.text = text
+            textTelemetryOverlay.visibility = View.VISIBLE
+            val t = lastTelemetry
+            textTelemetryOverlay.text = if (t == null || !t.hasFix) {
+                "GPS: no fix"
+            } else {
+                "${String.format("%.1f", t.speedKmh)} km/h\n${String.format("%.5f", t.lat)}, ${String.format("%.5f", t.lon)}"
+            }
         }
 
         fun setQuality(index: Int) {
@@ -295,7 +306,7 @@ class ControllerDriveActivity : AppCompatActivity() {
                         onTelemetry = { telemetry ->
                             runOnUiThread {
                                 lastTelemetry = telemetry
-                                updateDebugOverlay()
+                                updateTelemetryOverlay()
                             }
                         },
                     )
@@ -390,7 +401,7 @@ class ControllerDriveActivity : AppCompatActivity() {
             telemetryEnabled = checked
             controlLink.sendTelemetryEnable(checked)
             if (!checked) lastTelemetry = null
-            updateDebugOverlay()
+            updateTelemetryOverlay()
             lifecycleScope.launch { modePrefs.setTelemetryEnabled(checked) }
         }
 

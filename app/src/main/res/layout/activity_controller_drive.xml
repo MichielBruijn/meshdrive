@@ -180,8 +180,8 @@
 
         <!-- Tells the vehicle to start/stop GPS (ControlFrame.TelemetryEnable) and
              send its speed/position back - off by default so the vehicle isn't
-             burning battery on location fixes nobody's looking at. Shown in the
-             debug overlay (textDebugOverlay) once data arrives. -->
+             burning battery on location fixes nobody's looking at. Shown as its own
+             HUD overlay on the video (textTelemetryOverlay) once checked. -->
         <CheckBox
             android:id="@+id/checkTelemetry"
             android:layout_width="wrap_content"
@@ -190,6 +190,25 @@
             android:textColor="@android:color/white"
             android:text="@string/controller_telemetry" />
     </LinearLayout>
+
+    <!-- GPS/speed HUD, rendered directly on the video - per direct request, distinct
+         from the small monospace debug text (textDebugOverlay) below. Its own
+         visibility follows checkTelemetry above (debug-only toggle), not general
+         debug mode - once you've deliberately turned this on you want to actually
+         see it while driving, not have it hidden by an unrelated setting. -->
+    <TextView
+        android:id="@+id/textTelemetryOverlay"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="64dp"
+        android:textColor="@android:color/white"
+        android:textStyle="bold"
+        android:textSize="22sp"
+        android:gravity="center"
+        android:background="#AA000000"
+        android:padding="8dp"
+        android:visibility="gone" />
 
     <!-- Debug-only (log + FPS/latency): bottom instead of top - a top overlay kept
          rendering under the status bar's clock/battery icons on some phones even with
