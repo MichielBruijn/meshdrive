@@ -9,12 +9,17 @@ package nu.bruijn.rcvehicle.video
  * automatically from decoded FPS when bandwidth is tight.
  */
 enum class VideoQuality(val width: Int, val height: Int, val bitrate: Int, val label: String) {
-    // Was 320x240 @ 300kbps - confirmed on real hardware that even that looked
-    // noticeably better than needed for driving-by-video, per direct feedback.
-    // Dropped hard (4x fewer pixels, 3x less bitrate) - genuinely small enough to
-    // matter for a tight-bandwidth fallback link (ESP-NOW-class, ~1 Mbps ceiling),
-    // not just a marginal trim.
-    LOW(160, 120, 100_000, "Low"),
+    // Was 320x240 @ 300kbps, then briefly 160x120 @ 100kbps - confirmed on real
+    // hardware that 160x120 breaks video entirely (Medium/High still worked, Low
+    // alone didn't - no capture-session error either, just silently no video).
+    // 120 isn't a multiple of 16 (240/480/960 all are, and HIGH's own doc already
+    // flags 16-alignment as the thing camera/encoder HALs are picky about here) -
+    // almost certainly the same class of HAL quirk as HIGH's 960x720 issue below,
+    // just failing silently instead of via onConfigureFailed this time. Resolution
+    // back to the confirmed-working 320x240; bitrate alone (a pure encoder
+    // rate-control knob, no HAL resolution-support risk at all) does the actual
+    // size reduction instead - 80kbps is a hard cut from the original 300kbps.
+    LOW(320, 240, 80_000, "Low"),
     MEDIUM(640, 480, 800_000, "Medium"),
     // Was 960x720 - confirmed on real hardware that this non-standard size fails to
     // even start on the Fairphone 5's camera (capture session configuration rejected
