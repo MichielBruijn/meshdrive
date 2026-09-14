@@ -3,6 +3,7 @@ package nu.bruijn.rcvehicle.mode
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -27,6 +28,11 @@ class ModePrefs(private val context: Context) {
         val RECENT_VEHICLES = stringPreferencesKey("recent_vehicle_addresses")
         val VEHICLE_NAMES = stringPreferencesKey("vehicle_names")
         val DEBUG_ENABLED = booleanPreferencesKey("debug_enabled")
+        val AUTO_QUALITY = booleanPreferencesKey("auto_quality_enabled")
+        val SAFE_STEERING_ENABLED = booleanPreferencesKey("safe_steering_enabled")
+        val SAFE_STEERING_MAX_SPEED_KMH = intPreferencesKey("safe_steering_max_speed_kmh")
+        val SAFE_STEERING_REDUCTION_PERCENT = intPreferencesKey("safe_steering_reduction_percent")
+        val AUDIO_MUTED = booleanPreferencesKey("audio_muted")
     }
 
     private val MAX_RECENT_VEHICLES = 10
@@ -115,5 +121,37 @@ class ModePrefs(private val context: Context) {
 
     suspend fun setDebugEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.DEBUG_ENABLED] = enabled }
+    }
+
+    /**
+     * Driving-screen settings that should survive a restart and carry over to
+     * whichever vehicle gets connected next, not just stay checked cosmetically -
+     * ControllerDriveActivity re-sends the underlying ControlFrame messages once
+     * connected, since a fresh vehicle doesn't otherwise know these were on.
+     */
+    val autoQualityEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUTO_QUALITY] ?: false }
+    suspend fun setAutoQualityEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.AUTO_QUALITY] = enabled }
+    }
+
+    val safeSteeringEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.SAFE_STEERING_ENABLED] ?: false }
+    suspend fun setSafeSteeringEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.SAFE_STEERING_ENABLED] = enabled }
+    }
+
+    val safeSteeringMaxSpeedKmh: Flow<Int> = context.dataStore.data.map { it[Keys.SAFE_STEERING_MAX_SPEED_KMH] ?: 20 }
+    val safeSteeringReductionPercent: Flow<Int> = context.dataStore.data.map { it[Keys.SAFE_STEERING_REDUCTION_PERCENT] ?: 60 }
+    suspend fun setSafeSteeringConfig(maxSpeedKmh: Int, reductionPercent: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.SAFE_STEERING_MAX_SPEED_KMH] = maxSpeedKmh
+            prefs[Keys.SAFE_STEERING_REDUCTION_PERCENT] = reductionPercent
+        }
+    }
+
+    /** Single toggle for both directions of the controller<->vehicle mic link - see
+     * ControllerDriveActivity's Mute button doc for why it's unified. */
+    val audioMuted: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUDIO_MUTED] ?: false }
+    suspend fun setAudioMuted(muted: Boolean) {
+        context.dataStore.edit { it[Keys.AUDIO_MUTED] = muted }
     }
 }

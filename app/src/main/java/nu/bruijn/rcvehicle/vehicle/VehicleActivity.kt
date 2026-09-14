@@ -35,6 +35,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.audio.AudioPacket
+import nu.bruijn.rcvehicle.audio.AudioReceiver
 import nu.bruijn.rcvehicle.audio.AudioSender
 import nu.bruijn.rcvehicle.common.InternetNetworkBinder
 import nu.bruijn.rcvehicle.common.QrCode
@@ -75,7 +76,13 @@ class VehicleActivity : AppCompatActivity() {
     private var tickRunnable: Runnable? = null
     private val controlLink = ControlLink()
     private val videoSender = VideoSender(this)
-    private val audioSender = AudioSender()
+    private val audioSender = AudioSender(android.media.MediaRecorder.AudioSource.CAMCORDER)
+
+    // Controller's talk-back mic (two-way audio, per direct request) - doesn't need
+    // to know the controller's address to listen, same as ControlLink.listen(), so
+    // it can just run for this screen's whole lifetime rather than being tied to
+    // maybeStartVideo() the way the outgoing audioSender above is.
+    private val controllerVoiceReceiver = AudioReceiver()
     private var videoStarted = false
     private var lastRemoteControlAtMs = 0L
 
@@ -340,6 +347,13 @@ class VehicleActivity : AppCompatActivity() {
         checkYggdrasil()
 
         videoSender.onError = { msg -> log("video: $msg") }
+
+        controllerVoiceReceiver.onError = { msg -> log("controller voice: $msg") }
+        try {
+            controllerVoiceReceiver.start(AudioPacket.CONTROLLER_TO_VEHICLE_PORT)
+        } catch (e: Exception) {
+            log("controller voice listen failed: ${e::class.simpleName}: ${e.message}")
+        }
 
         val buttonListen = findViewById<Button>(R.id.buttonListen)
         val defaultListenButtonTint = buttonListen.backgroundTintList
@@ -617,7 +631,7 @@ class VehicleActivity : AppCompatActivity() {
             PackageManager.PERMISSION_GRANTED
         ) {
             audioSender.onError = { msg -> log("audio: $msg") }
-            audioSender.start(controllerAddress.hostAddress!!, AudioPacket.PORT)
+            audioSender.start(controllerAddress.hostAddress!!, AudioPacket.VEHICLE_TO_CONTROLLER_PORT)
         } else {
             log("audio: RECORD_AUDIO permission not granted, skipping")
         }
@@ -634,6 +648,7 @@ class VehicleActivity : AppCompatActivity() {
         controlLink.close()
         videoSender.stop()
         audioSender.stop()
+        controllerVoiceReceiver.stop()
         locationListener?.let { locationManager?.removeUpdates(it) }
         if (bound) {
             unbindService(connection)

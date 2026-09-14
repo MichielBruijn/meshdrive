@@ -14,7 +14,11 @@ import java.nio.ByteBuffer
  * config, 3 bits padding).
  */
 object AudioPacket {
-    const val PORT = 7863
+    // Two-way audio needs its own port per direction - both ends run an
+    // AudioSender+AudioReceiver pair, and a single shared port would mean each
+    // side's own outgoing packets could get handed to its own receive loop.
+    const val VEHICLE_TO_CONTROLLER_PORT = 7863
+    const val CONTROLLER_TO_VEHICLE_PORT = 7864
     private const val HEADER_SIZE = 6 // seq:u32, sampleRateIndex:u8, channelConfig:u8
 
     fun encode(seq: Int, sampleRateIndex: Int, channelConfig: Int, data: ByteArray): ByteArray {

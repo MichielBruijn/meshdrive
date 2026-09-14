@@ -1,8 +1,11 @@
 package nu.bruijn.rcvehicle.controller
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
+import android.media.MediaRecorder
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -16,6 +19,8 @@ import android.widget.FrameLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -27,6 +32,7 @@ import kotlinx.coroutines.launch
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.audio.AudioPacket
 import nu.bruijn.rcvehicle.audio.AudioReceiver
+import nu.bruijn.rcvehicle.audio.AudioSender
 import nu.bruijn.rcvehicle.control.ControlFrame
 import nu.bruijn.rcvehicle.control.ControlLink
 import nu.bruijn.rcvehicle.mode.ModePrefs
@@ -79,6 +85,13 @@ class ControllerDriveActivity : AppCompatActivity() {
     private val controlLink = ControlLink()
     private val videoReceiver = VideoReceiver()
     private val audioReceiver = AudioReceiver()
+
+    // Talk-back mic (two-way audio, per direct request) - VOICE_COMMUNICATION, same
+    // reasoning as VehicleActivity's own AudioSender doc, gets echo cancellation/
+    // noise suppression on hardware that supports it since this is a real-time
+    // conversation, not an ambient feed. Unlike audioReceiver (started once for the
+    // whole screen's lifetime), this only runs while not muted - see startMic().
+    private val micSender = AudioSender(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
     private val tickHandler = Handler(Looper.getMainLooper())
     private var tickRunnable: Runnable? = null
     private var seq = 0
@@ -112,13 +125,16 @@ class ControllerDriveActivity : AppCompatActivity() {
     private var autoQuality = false
     private var lowFpsStreak = 0
     private var healthyFpsStreak = 0
+    private var steerLimitEnabled = false
 
     // Promoted to fields (rather than onCreate-local vals) so onPause()/onResume()
-    // can restart video/audio and log to the same views - see their doc for why
+    // can restart video/audio/mic and log to the same views - see their doc for why
     // that's needed (screen lock doesn't reliably re-fire onSurfaceTextureAvailable).
     private lateinit var logView: TextView
     private lateinit var textureVideoView: TextureView
     private lateinit var videoContainerView: FrameLayout
+    private lateinit var modePrefs: ModePrefs
+    private var vehicleAddress: String? = null
 
     private fun log(line: String) = runOnUiThread {
         Log.d("RCDebug", line)
@@ -142,7 +158,9 @@ class ControllerDriveActivity : AppCompatActivity() {
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
-        val address = intent.getStringExtra(EXTRA_VEHICLE_ADDRESS)
+        vehicleAddress = intent.getStringExtra(EXTRA_VEHICLE_ADDRESS)
+        val address = vehicleAddress
+        modePrefs = ModePrefs(applicationContext)
         logView = findViewById(R.id.textRtcLog)
         videoContainerView = findViewById(R.id.videoContainer)
         textureVideoView = findViewById(R.id.textureVideo)
@@ -151,6 +169,12 @@ class ControllerDriveActivity : AppCompatActivity() {
         val textDebugOverlay = findViewById<TextView>(R.id.textDebugOverlay)
         val textConnectionWarning = findViewById<TextView>(R.id.textConnectionWarning)
 
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+        }
+
         // Verbose log + FPS/latency numbers + the resolution picker + steering-limit
         // curve tuning are diagnostic/rarely-needed, hidden unless "Debug mode" is on
         // (MainActivity) - textConnectionWarning below, and Safe steering itself,
@@ -158,7 +182,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         val qualitySection = findViewById<View>(R.id.qualitySection)
         val steerLimitConfigSection = findViewById<View>(R.id.steerLimitConfigSection)
         lifecycleScope.launch {
-            val debugEnabled = ModePrefs(applicationContext).debugEnabled.first()
+            val debugEnabled = modePrefs.debugEnabled.first()
             logView.visibility = if (debugEnabled) View.VISIBLE else View.GONE
             textDebugOverlay.visibility = if (debugEnabled) View.VISIBLE else View.GONE
             qualitySection.visibility = if (debugEnabled) View.VISIBLE else View.GONE
@@ -270,6 +294,17 @@ class ControllerDriveActivity : AppCompatActivity() {
                             }
                         },
                     )
+
+                    // Re-apply Safe steering to whichever vehicle this is, since a
+                    // fresh vehicle doesn't otherwise know it was on last session -
+                    // see ModePrefs.safeSteeringEnabled's doc.
+                    if (modePrefs.safeSteeringEnabled.first()) {
+                        controlLink.sendSteerLimit(true)
+                        controlLink.sendSteerLimitConfig(
+                            modePrefs.safeSteeringMaxSpeedKmh.first().toFloat(),
+                            modePrefs.safeSteeringReductionPercent.first() / 100f,
+                        )
+                    }
                 } catch (e: Exception) {
                     log("connect failed: ${e::class.simpleName}: ${e.message}")
                 }
@@ -280,11 +315,11 @@ class ControllerDriveActivity : AppCompatActivity() {
 
         val buttonSteerLimit = findViewById<Button>(R.id.buttonSteerLimit)
         val defaultSteerLimitTint = buttonSteerLimit.backgroundTintList
-        var steerLimitEnabled = false
         buttonSteerLimit.setOnClickListener {
             steerLimitEnabled = !steerLimitEnabled
             controlLink.sendSteerLimit(steerLimitEnabled)
             buttonSteerLimit.backgroundTintList = if (steerLimitEnabled) activeTint else defaultSteerLimitTint
+            lifecycleScope.launch { modePrefs.setSafeSteeringEnabled(steerLimitEnabled) }
         }
 
         val textSteerLimitMaxSpeed = findViewById<TextView>(R.id.textSteerLimitMaxSpeed)
@@ -295,13 +330,17 @@ class ControllerDriveActivity : AppCompatActivity() {
         // Matches VehicleActivity's own DEFAULT_MAX_SPEED_FOR_FULL_STEER_LIMIT_KMH/
         // DEFAULT_MAX_STEER_REDUCTION_FRACTION - both sides start in agreement, so
         // Safe steering works sensibly even if these sliders are never touched.
+        // Overwritten below once the persisted values (if any) have loaded.
         seekSteerLimitMaxSpeed.progress = 20
         seekSteerLimitReduction.progress = 60
         textSteerLimitMaxSpeed.text = getString(R.string.controller_steer_limit_max_speed, seekSteerLimitMaxSpeed.progress)
         textSteerLimitReduction.text = getString(R.string.controller_steer_limit_reduction, seekSteerLimitReduction.progress)
 
         fun sendSteerLimitConfig() {
-            controlLink.sendSteerLimitConfig(seekSteerLimitMaxSpeed.progress.toFloat(), seekSteerLimitReduction.progress / 100f)
+            val maxSpeed = seekSteerLimitMaxSpeed.progress
+            val reduction = seekSteerLimitReduction.progress
+            controlLink.sendSteerLimitConfig(maxSpeed.toFloat(), reduction / 100f)
+            lifecycleScope.launch { modePrefs.setSafeSteeringConfig(maxSpeed, reduction) }
         }
         seekSteerLimitMaxSpeed.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -321,7 +360,10 @@ class ControllerDriveActivity : AppCompatActivity() {
         })
 
         val checkAutoQuality = findViewById<CheckBox>(R.id.checkAutoQuality)
-        checkAutoQuality.setOnCheckedChangeListener { _, checked -> autoQuality = checked }
+        checkAutoQuality.setOnCheckedChangeListener { _, checked ->
+            autoQuality = checked
+            lifecycleScope.launch { modePrefs.setAutoQualityEnabled(checked) }
+        }
         findViewById<Button>(R.id.buttonQualityLow).setOnClickListener {
             checkAutoQuality.isChecked = false
             setQuality(VideoQuality.LOW.ordinal)
@@ -352,12 +394,45 @@ class ControllerDriveActivity : AppCompatActivity() {
             buttonRearView.backgroundTintList = if (rearViewActive) activeTint else defaultRearViewTint
         }
 
+        // One toggle for both directions of the mic link, per direct request: muting
+        // stops listening to the vehicle's mic (audioReceiver.muted, as before) AND
+        // stops transmitting this phone's own mic to the vehicle (startMic()/
+        // micSender.stop()) - not two separate controls. audioReceiver.muted is the
+        // single source of truth for "muted" (no separate flag to keep in sync).
         val buttonMute = findViewById<Button>(R.id.buttonMute)
         val defaultMuteTint = buttonMute.backgroundTintList
-        buttonMute.setOnClickListener {
-            audioReceiver.muted = !audioReceiver.muted
+        fun applyMuteUi() {
             buttonMute.text = getString(if (audioReceiver.muted) R.string.controller_unmute else R.string.controller_mute)
             buttonMute.backgroundTintList = if (audioReceiver.muted) activeTint else defaultMuteTint
+        }
+        buttonMute.setOnClickListener {
+            audioReceiver.muted = !audioReceiver.muted
+            applyMuteUi()
+            if (audioReceiver.muted) micSender.stop() else startMic()
+            lifecycleScope.launch { modePrefs.setAudioMuted(audioReceiver.muted) }
+        }
+
+        // Restores Auto quality/Safe steering/Mute from last session - per direct
+        // request ("onthou..."). Runs after the views/listeners above exist, so
+        // setting .isChecked/.progress here naturally drives their existing update
+        // logic (label text, tint) instead of duplicating it. Safe steering's own
+        // ControlFrame messages are re-sent once actually connected (see the
+        // controlLink.connect() block above) - this part only restores local UI
+        // state and audioReceiver.muted/micSender, which don't need the vehicle to
+        // know anything.
+        lifecycleScope.launch {
+            autoQuality = modePrefs.autoQualityEnabled.first()
+            checkAutoQuality.isChecked = autoQuality
+
+            steerLimitEnabled = modePrefs.safeSteeringEnabled.first()
+            buttonSteerLimit.backgroundTintList = if (steerLimitEnabled) activeTint else defaultSteerLimitTint
+
+            seekSteerLimitMaxSpeed.progress = modePrefs.safeSteeringMaxSpeedKmh.first()
+            seekSteerLimitReduction.progress = modePrefs.safeSteeringReductionPercent.first()
+
+            audioReceiver.muted = modePrefs.audioMuted.first()
+            applyMuteUi()
+            if (!audioReceiver.muted) startMic() else micSender.stop()
         }
 
         setUpRecordButton(::log)
@@ -415,10 +490,32 @@ class ControllerDriveActivity : AppCompatActivity() {
     private fun startAudio() {
         audioReceiver.stop()
         try {
-            audioReceiver.start(AudioPacket.PORT)
-            log("listening for audio on port ${AudioPacket.PORT}")
+            audioReceiver.start(AudioPacket.VEHICLE_TO_CONTROLLER_PORT)
+            log("listening for audio on port ${AudioPacket.VEHICLE_TO_CONTROLLER_PORT}")
         } catch (e: Exception) {
             log("audio listen failed: ${e::class.simpleName}: ${e.message}")
+        }
+    }
+
+    /** Starts capturing+sending this phone's own mic to the vehicle - a no-op while
+     * muted (audioReceiver.muted doubles as the mic-mute flag, see the Mute button's
+     * doc) or before a vehicle address is known. Safe to call repeatedly/from
+     * multiple places (onResume, the Mute button, the initial settings load, which
+     * can all race) - always stops any previous capture first. */
+    private fun startMic() {
+        if (audioReceiver.muted) return
+        val addr = vehicleAddress
+        if (addr.isNullOrEmpty()) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        micSender.stop()
+        try {
+            micSender.start(addr, AudioPacket.CONTROLLER_TO_VEHICLE_PORT)
+        } catch (e: Exception) {
+            log("mic start failed: ${e::class.simpleName}: ${e.message}")
         }
     }
 
@@ -447,12 +544,14 @@ class ControllerDriveActivity : AppCompatActivity() {
         stopRecording(::log)
         videoReceiver.stop()
         audioReceiver.stop()
+        micSender.stop()
     }
 
     override fun onResume() {
         super.onResume()
         tickRunnable?.let { tickHandler.post(it) }
         startAudio()
+        startMic()
         textureVideoView.surfaceTexture?.let { startVideo(it) }
     }
 
@@ -654,6 +753,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         stopRecording(::log)
         videoReceiver.stop()
         audioReceiver.stop()
+        micSender.stop()
         super.onDestroy()
     }
 }

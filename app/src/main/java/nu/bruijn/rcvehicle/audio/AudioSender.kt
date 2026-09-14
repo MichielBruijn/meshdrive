@@ -14,26 +14,34 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 
 /**
- * Captures the vehicle phone's mic, encodes it AAC-LC with the hardware/software
- * codec MediaCodec picks, and sends it over UDP to the controller - same transport
- * philosophy as VideoSender (best-effort UDP over Yggdrasil, no fallback signaling
- * server), on its own port/packet format (AudioPacket) so a lost or garbled audio
- * packet can never affect video.
+ * Captures a mic, encodes it AAC-LC with the hardware/software codec MediaCodec
+ * picks, and sends it over UDP - same transport philosophy as VideoSender (best-
+ * effort UDP over Yggdrasil, no fallback signaling server). Used in both
+ * directions of the controller<->vehicle voice link, each with its own instance,
+ * [audioSource], and AudioPacket port (VehicleActivity's ambient/engine-noise mic
+ * feed uses CAMCORDER since it should sound like whatever the camera's pointed
+ * at; ControllerDriveActivity's talk-back mic uses VOICE_COMMUNICATION, Android's
+ * source for real-time two-way voice, which gets echo cancellation/noise
+ * suppression on hardware that supports it).
  *
  * Fixed mono/16kHz/32kbps: plenty for engine noise and spoken warnings, and small
  * enough to not compete meaningfully with the video stream's bandwidth budget on a
  * cellular uplink, which is the tighter constraint here (VideoSender's doc).
+ *
+ * start()/stop() are repeatable (mute toggling stops/restarts capture rather than
+ * just dropping packets - see ControllerDriveActivity's Mute button doc for why) -
+ * the encoder's callback HandlerThread is recreated each start() rather than
+ * reused, since a HandlerThread that's been quitSafely()'d can't take a new
+ * Looper-bound callback afterward.
  */
-class AudioSender {
+class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) {
     private var audioRecord: AudioRecord? = null
     private var encoder: MediaCodec? = null
     private var socket: DatagramSocket? = null
     private var remoteAddress: InetAddress? = null
     private var remotePort: Int = 0
     private var seq = 0
-
-    private val audioThread = HandlerThread("AudioSenderCodec").apply { start() }
-    private val audioHandler = Handler(audioThread.looper)
+    private var audioThread: HandlerThread? = null
 
     var onError: ((String) -> Unit)? = null
 
@@ -41,6 +49,7 @@ class AudioSender {
         this.remotePort = remotePort
         remoteAddress = InetAddress.getByName(remoteHost)
         socket = DatagramSocket()
+        seq = 0
 
         val minBufSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (minBufSize <= 0) {
@@ -48,7 +57,7 @@ class AudioSender {
             return
         }
         val record = try {
-            AudioRecord(MediaRecorder.AudioSource.CAMCORDER, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBufSize * 2)
+            AudioRecord(audioSource, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBufSize * 2)
         } catch (e: SecurityException) {
             onError?.invoke("RECORD_AUDIO permission not granted")
             return
@@ -59,6 +68,10 @@ class AudioSender {
             return
         }
         audioRecord = record
+
+        val thread = HandlerThread("AudioSenderCodec").apply { start() }
+        audioThread = thread
+        val audioHandler = Handler(thread.looper)
 
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, SAMPLE_RATE, 1).apply {
             setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
@@ -130,7 +143,8 @@ class AudioSender {
         encoder = null
         socket?.close()
         socket = null
-        audioThread.quitSafely()
+        audioThread?.quitSafely()
+        audioThread = null
     }
 
     companion object {
