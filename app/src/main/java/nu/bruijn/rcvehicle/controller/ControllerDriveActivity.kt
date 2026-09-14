@@ -609,6 +609,12 @@ class ControllerDriveActivity : AppCompatActivity() {
         val fileName = "meshdrive_" +
             java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date()) + ".mp4"
 
+        // Whatever GPS fix is on hand right when recording starts (or none, if the
+        // GPS/speed overlay was never turned on or hasn't got a fix yet) - see
+        // MuxerSession's [location] doc for why this is a one-shot geotag rather
+        // than anything that could track the vehicle's route through the file.
+        val location = lastTelemetry?.takeIf { it.hasFix }?.let { it.lat to it.lon }
+
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
             val values = android.content.ContentValues().apply {
                 put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, fileName)
@@ -628,14 +634,14 @@ class ControllerDriveActivity : AppCompatActivity() {
                 return null
             }
             val muxer = android.media.MediaMuxer(pfd.fileDescriptor, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            return RecordingTarget(MuxerSession(muxer, currentRotation), uri, pfd, "Movies/MeshDrive/$fileName")
+            return RecordingTarget(MuxerSession(muxer, currentRotation, location), uri, pfd, "Movies/MeshDrive/$fileName")
         }
 
         val dir = getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES) ?: return null
         dir.mkdirs()
         val file = java.io.File(dir, fileName)
         val muxer = android.media.MediaMuxer(file.absolutePath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        return RecordingTarget(MuxerSession(muxer, currentRotation), null, null, file.absolutePath)
+        return RecordingTarget(MuxerSession(muxer, currentRotation, location), null, null, file.absolutePath)
     }
 
     /**

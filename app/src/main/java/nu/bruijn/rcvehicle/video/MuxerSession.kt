@@ -37,8 +37,17 @@ import java.nio.ByteBuffer
  * one hint for the whole file, set once before start(), so a mid-recording
  * rotation change (e.g. physically adjusting the mount) won't retroactively fix
  * itself, same trade-off ordinary camera apps make.
+ *
+ * [location] is set as the file's standard geo-location metadata (MediaMuxer's
+ * udta/©xyz box - the same tag a phone camera writes when it geotags a video,
+ * readable by Google Photos and most gallery apps/exiftool) - per direct
+ * request, a cheap one-shot alternative to actually burning the GPS/speed HUD
+ * into the recorded pixels (which would need a real decode/draw/re-encode
+ * pipeline - declined, see ControllerDriveActivity's updateTelemetryOverlay()
+ * doc). Only the fix available when recording starts, same one-hint-per-file
+ * limitation as rotationDegrees above.
  */
-class MuxerSession(private val muxer: MediaMuxer, rotationDegrees: Int) {
+class MuxerSession(private val muxer: MediaMuxer, rotationDegrees: Int, location: Pair<Double, Double>? = null) {
     private val lock = Any()
     private var videoTrack = -1
     private var audioTrack = -1
@@ -47,6 +56,7 @@ class MuxerSession(private val muxer: MediaMuxer, rotationDegrees: Int) {
 
     init {
         muxer.setOrientationHint(rotationDegrees)
+        location?.let { (lat, lon) -> runCatching { muxer.setLocation(lat.toFloat(), lon.toFloat()) } }
     }
 
     /** Set before the first frame is fed - only true if audio was already flowing. */
