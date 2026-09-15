@@ -1,5 +1,6 @@
 package nu.bruijn.rcvehicle.yggdrasil
 
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
@@ -18,9 +19,14 @@ object PeerLatencyProbe {
 
     private const val CONNECT_TIMEOUT_MS = 3000
 
-    /** null latency means unreachable (timed out, refused, or an unparsable/
-     * unprobeable URI - quic:// peers are UDP-based and can't be measured this
-     * way, so they're reported as unreachable rather than guessed at). */
+    /** null latency means unreachable (timed out, refused, DNS lookup failed, or
+     * an unparsable/unprobeable URI - quic:// peers are UDP-based and can't be
+     * measured this way, so they're reported as unreachable rather than guessed
+     * at). DNS resolution happens before the clock starts - deliberately not
+     * counted, since it's a one-off, often-cached lookup cost rather than part of
+     * the actual network path to the peer, and mixing it into the timing would
+     * unfairly penalize hostname-based peers against IP-literal ones regardless
+     * of which is actually closer. */
     fun measure(peerUri: String): Status {
         val parsed = runCatching { URI(peerUri) }.getOrNull()
         val host = parsed?.host
@@ -28,9 +34,14 @@ object PeerLatencyProbe {
         if (parsed == null || host == null || port !in 1..65535 || parsed.scheme !in setOf("tcp", "tls")) {
             return Status(peerUri, null)
         }
+        val resolved = try {
+            InetAddress.getByName(host)
+        } catch (_: Exception) {
+            return Status(peerUri, null)
+        }
         val start = System.nanoTime()
         return try {
-            Socket().use { it.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS) }
+            Socket().use { it.connect(InetSocketAddress(resolved, port), CONNECT_TIMEOUT_MS) }
             Status(peerUri, (System.nanoTime() - start) / 1_000_000)
         } catch (_: Exception) {
             Status(peerUri, null)

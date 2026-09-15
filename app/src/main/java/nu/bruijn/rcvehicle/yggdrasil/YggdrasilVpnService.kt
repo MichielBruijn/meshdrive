@@ -161,6 +161,21 @@ class YggdrasilVpnService : VpnService() {
         json.put("AdminListen", "none")
         json.put("IfName", "none")
         json.put("Peers", JSONArray(listOf(peer)))
+        // Yggdrasil has no "don't relay for others" flag - per its own config.go:
+        // "all network traffic will transit peer connections." A node with
+        // exactly one peer connection is a dead-end leaf that nothing can route
+        // *through* by definition, so pinning to a single explicit peer (above)
+        // already prevents this device from carrying strangers' traffic - EXCEPT
+        // the generated default also has multicast peer discovery on for every
+        // interface (Beacon+Listen, matching any interface name), which would
+        // silently add a second, uncontrolled peer connection the moment this
+        // phone shares a LAN with any other Yggdrasil node, undoing that
+        // guarantee. Emptying it out (gomobile's core only starts multicast at
+        // all `if len(MulticastInterfaces) > 0`) keeps the single configured
+        // peer as the only connection this node ever makes - deliberate,
+        // per direct request: mobile data is metered, this app's users didn't
+        // sign up to carry the wider mesh's traffic on their bill.
+        json.put("MulticastInterfaces", JSONArray())
         val updated = json.toString()
         file.writeText(updated, Charsets.UTF_8)
         return updated.toByteArray(Charsets.UTF_8)
