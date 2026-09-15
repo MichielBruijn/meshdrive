@@ -18,20 +18,22 @@ import java.net.InetAddress
  * the originally-planned WebRTC data channel for control (plan section 4).
  *
  * CONFIRMED ON REAL HARDWARE (2026-09-13): stream-webrtc-android's ICE candidate
- * gathering never surfaces the Yggdrasil tun interface on a cellular-only phone,
- * even with the library's own "requestVPN" field trial enabled correctly (see
- * RtcClient's doc comment for the full investigation). Plain sockets (this class,
- * and SignalingSession's TCP) have never had this problem - they just use the
- * OS's normal IPv6 routing table, which already has the `200::/7 -> tun` route.
- * Since we already know a fixed, always-reachable address pair (proven via ping6
- * and the TCP signaling channel), we don't need ICE's dynamic NAT-traversal
- * discovery at all for this - it was solving a problem we don't have.
+ * gathering never surfaced the Yggdrasil tun interface on a cellular-only phone,
+ * even with the library's own "requestVPN" field trial enabled correctly. Plain
+ * sockets (this class) never had this problem - they just use the OS's normal
+ * IPv6 routing table, which already has the `200::/7 -> tun` route. Since we
+ * already know a fixed, always-reachable address pair (proven via ping6), we
+ * don't need ICE's dynamic NAT-traversal discovery at all for this - it was
+ * solving a problem we don't have.
  *
  * Video (plan section 4's other half) hit the identical ICE/VPN problem and was
  * likewise moved off WebRTC onto plain UDP - see video/VideoSender.kt and
- * video/VideoReceiver.kt. RtcClient/the signaling classes are left unused in the
- * codebase for now rather than deleted, in case a future library fix makes them
- * viable again.
+ * video/VideoReceiver.kt. The now-fully-unused RtcClient/signaling classes and
+ * the stream-webrtc-android dependency itself (its native libs alone were ~41MB
+ * across 4 ABIs - the large majority of the app's entire size) were removed
+ * outright rather than kept "in case a future library fix helps" - nothing had
+ * used them in months and a real library fix, if one ever comes, is a plain
+ * dependency re-add away.
  */
 class ControlLink {
     private var socket: DatagramSocket? = null

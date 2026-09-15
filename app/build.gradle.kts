@@ -46,10 +46,6 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    // stream-webrtc-android is unused (see RtcClient's doc: ICE never surfaces the
-    // Yggdrasil tun interface on a cellular-only phone) but left as a dependency in
-    // case a future library fix makes it viable again.
-    implementation("io.getstream:stream-webrtc-android:1.3.8")
     implementation("com.github.mik3y:usb-serial-for-android:3.11.0")
     implementation("com.google.zxing:core:3.5.3") // QR generation (vehicle side)
     implementation("com.journeyapps:zxing-android-embedded:4.3.0") // QR scanning (controller side)
