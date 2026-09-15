@@ -215,30 +215,45 @@ class ControlLink {
         const val PORT = 7861
 
         /**
-         * One-shot "is this vehicle reachable right now" check for ControllerActivity's
-         * recent-vehicles list - a single Ping/Pong round trip on a throwaway socket, not
-         * a full connect()/startPing() session. Works whenever the vehicle's own screen
-         * is open (VehicleActivity now auto-starts listen() as soon as it opens), since
-         * listen() replies to any Ping unconditionally, regardless of whether a real
-         * control session is active. False on any failure or timeout - "not reachable"
-         * covers both "vehicle off" and "genuinely no route", no need to distinguish
-         * those for a simple online/offline dot.
+         * "Is this vehicle reachable right now" check for ControllerActivity's
+         * recent-vehicles list - up to [attempts] Ping/Pong round trips on a
+         * throwaway socket (succeeds on the first that lands), not a full
+         * connect()/startPing() session. Works whenever the vehicle's own screen
+         * is open (VehicleActivity now auto-starts listen() as soon as it opens),
+         * since listen() replies to any Ping unconditionally, regardless of
+         * whether a real control session is active.
+         *
+         * A single attempt isn't enough over the public Yggdrasil mesh: measured
+         * real-world hop latency alone ran to 800ms+ in testing, and any peer
+         * reconnect (YggdrasilVpnService's PeerMonitor switching to a better
+         * candidate, or its wifi-availability-triggered redial) costs a few
+         * seconds of route reconvergence during which packets are simply
+         * dropped, not delayed - confirmed on real hardware as a false
+         * "offline" dot for a vehicle that came right back a few seconds later.
+         * Retrying instead of just waiting longer once bounds the worst case
+         * (a genuinely offline vehicle) to roughly attempts*timeoutMs instead of
+         * one long wait, while still recovering from a single dropped probe.
          */
-        suspend fun probeOnline(address: String, timeoutMs: Int = 1500): Boolean = withContext(Dispatchers.IO) {
-            try {
-                DatagramSocket().use { socket ->
-                    socket.soTimeout = timeoutMs
-                    val inetAddress = InetAddress.getByName(address)
-                    val ping = ControlFrame.encodePing(SystemClock.elapsedRealtime())
-                    socket.send(DatagramPacket(ping, ping.size, inetAddress, PORT))
-                    val buffer = ByteArray(64)
-                    val packet = DatagramPacket(buffer, buffer.size)
-                    socket.receive(packet) // throws SocketTimeoutException if nothing replies in time
-                    ControlFrame.decode(packet.data, packet.length) is ControlFrame.Decoded.Pong
+        suspend fun probeOnline(address: String, attempts: Int = 3, timeoutMs: Int = 1200): Boolean = withContext(Dispatchers.IO) {
+            val inetAddress = runCatching { InetAddress.getByName(address) }.getOrNull() ?: return@withContext false
+            for (attempt in 1..attempts) {
+                try {
+                    DatagramSocket().use { socket ->
+                        socket.soTimeout = timeoutMs
+                        val ping = ControlFrame.encodePing(SystemClock.elapsedRealtime())
+                        socket.send(DatagramPacket(ping, ping.size, inetAddress, PORT))
+                        val buffer = ByteArray(64)
+                        val packet = DatagramPacket(buffer, buffer.size)
+                        socket.receive(packet) // throws SocketTimeoutException if nothing replies in time
+                        if (ControlFrame.decode(packet.data, packet.length) is ControlFrame.Decoded.Pong) {
+                            return@withContext true
+                        }
+                    }
+                } catch (_: Exception) {
+                    // try again, unless this was the last attempt
                 }
-            } catch (_: Exception) {
-                false
             }
+            false
         }
     }
 }
