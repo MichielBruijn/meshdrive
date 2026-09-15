@@ -26,6 +26,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -344,6 +345,24 @@ class VehicleActivity : AppCompatActivity() {
         }
         recheckYggdrasil = ::checkYggdrasil
         checkYggdrasil()
+
+        val textYggdrasilPeers = findViewById<TextView>(R.id.textYggdrasilPeers)
+        lifecycleScope.launch {
+            while (isActive) {
+                val active = YggdrasilController.activePeer()
+                val statuses = YggdrasilController.peerStatuses()
+                textYggdrasilPeers.text = if (statuses.isEmpty()) {
+                    ""
+                } else {
+                    statuses.joinToString("\n") { s ->
+                        val marker = if (s.uri == active) "*" else " "
+                        val latency = s.latencyMs?.let { "${it}ms" } ?: "unreachable"
+                        "$marker ${s.uri} - $latency"
+                    }
+                }
+                delay(5000)
+            }
+        }
 
         videoSender.onError = { msg -> log("video: $msg") }
 

@@ -133,6 +133,17 @@
             android:textIsSelectable="true"
             android:text="@string/vehicle_own_address_detecting" />
 
+        <!-- Candidate peer pool with latency-probe results, refreshed on
+             PeerMonitor's own cadence - see YggdrasilController.peerStatuses(). -->
+        <TextView
+            android:id="@+id/textYggdrasilPeers"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:fontFamily="monospace"
+            android:textSize="12sp"
+            android:textIsSelectable="true" />
+
         <Button
             android:id="@+id/buttonListen"
             android:layout_width="match_parent"

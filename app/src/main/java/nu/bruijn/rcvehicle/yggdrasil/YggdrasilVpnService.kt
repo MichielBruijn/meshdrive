@@ -34,36 +34,63 @@ import kotlin.concurrent.thread
  * mobile.Yggdrasil/mobile.Mobile Java API that produces.
  *
  * Identity (PrivateKey) persists across restarts in a config file under
- * filesDir - generated once, then only its "Peers" field gets rewritten before
- * each start (see [buildConfig]). Losing that file means losing this node's
- * Yggdrasil address, so it's deliberately never regenerated once it exists.
+ * filesDir - generated once, then only its "Peers" field gets rewritten each
+ * time the mesh (re)connects (see [buildConfig]). Losing that file means losing
+ * this node's Yggdrasil address, so it's deliberately never regenerated once it
+ * exists.
  *
- * Peer selection itself (which servers to list in "Peers", vehicle vs. controller
- * needing different privacy postures) is NOT decided here - callers pass the
- * peer URIs to use via the START intent's [EXTRA_PEERS], keeping this class
- * itself policy-free.
+ * Callers pass a *candidate pool* of peer URIs via the START intent's
+ * [EXTRA_PEERS] - not a fixed peer list. [PeerMonitor] measures reachability/
+ * latency across the pool on a background thread and keeps the mesh connected
+ * through whichever single candidate currently looks best, reconnecting when
+ * the active one drops or another pulls meaningfully ahead (see its doc for the
+ * exact thresholds). Deliberately only ever actually peers with ONE candidate
+ * at a time rather than all of them - staying connected to a whole pool would
+ * quietly change this node's exposure/relay posture on the wider mesh, which is
+ * a decision for whoever built the candidate pool (vehicle vs. controller
+ * privacy needs), not something this class should do as a side effect of
+ * "picking the best one."
  */
 class YggdrasilVpnService : VpnService() {
     companion object {
         const val ACTION_START = "nu.bruijn.rcvehicle.yggdrasil.START"
         const val ACTION_STOP = "nu.bruijn.rcvehicle.yggdrasil.STOP"
-        const val EXTRA_PEERS = "peers" // String[] of peer URIs, e.g. "tls://host:port"
+        const val EXTRA_PEERS = "peers" // String[] - candidate pool, best is auto-selected
 
         private const val TAG = "YggdrasilVpnService"
         private const val CHANNEL_ID = "yggdrasil_vpn"
         private const val NOTIFICATION_ID = 2000
 
+        // Tight retry while nothing's connected yet (first launch, or every
+        // candidate just failed) vs. a relaxed steady-state cadence once
+        // something's up - no reason to hammer candidates every few seconds once
+        // one of them is already working fine.
+        private const val RETRY_INTERVAL_MS = 5_000L
+        private const val STEADY_INTERVAL_MS = 60_000L
+
+        // A candidate has to beat the active one by more than this to be worth a
+        // reconnect - otherwise routine measurement jitter (a few ms either way
+        // on an already-fine link) would cause pointless reconnect churn, each of
+        // which costs ControlLink a ~1-2s failsafe blip. 30% is a somewhat
+        // arbitrary but deliberately conservative bar: "meaningfully better," not
+        // "marginally better."
+        private const val SWITCH_IMPROVEMENT_FACTOR = 0.7
+
         // Not a binder connection: callers (YggdrasilController) only ever need a
-        // cheap "is it up, what's its address" poll from another Activity, nowhere
-        // near hot enough to justify bindService()'s lifecycle ceremony.
+        // cheap "is it up, what's its address/peer status" poll from another
+        // Activity, nowhere near hot enough to justify bindService()'s ceremony.
         @Volatile private var instance: YggdrasilVpnService? = null
 
         val runningAddress: String? get() = instance?.addressString
+        val activePeer: String? get() = instance?.activePeerUri
+        val peerStatuses: List<PeerLatencyProbe.Status> get() = instance?.latestStatuses ?: emptyList()
     }
 
     private val yggdrasil = Yggdrasil()
-    private val started = AtomicBoolean()
+    private val running = AtomicBoolean() // whole-service lifecycle (foreground notification, monitor thread)
+    private val meshUp = AtomicBoolean() // just the current yggdrasil+TUN session - toggles on every reconnect
 
+    private var monitorThread: Thread? = null
     private var readerThread: Thread? = null
     private var writerThread: Thread? = null
     private var tunnel: ParcelFileDescriptor? = null
@@ -71,9 +98,12 @@ class YggdrasilVpnService : VpnService() {
     private var writerStream: FileOutputStream? = null
 
     /** Last-known address/subnet, exposed for callers that started us to poll -
-     * see [YggdrasilController] for the actual read side. Null until started. */
+     * see [YggdrasilController] for the actual read side. Null until connected. */
     @Volatile var addressString: String? = null
         private set
+
+    @Volatile private var activePeerUri: String? = null
+    @Volatile private var latestStatuses: List<PeerLatencyProbe.Status> = emptyList()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
@@ -82,8 +112,8 @@ class YggdrasilVpnService : VpnService() {
                 START_NOT_STICKY
             }
             else -> {
-                val peers = intent?.getStringArrayExtra(EXTRA_PEERS)?.toList() ?: emptyList()
-                start(peers)
+                val candidates = intent?.getStringArrayExtra(EXTRA_PEERS)?.toList() ?: emptyList()
+                start(candidates)
                 START_STICKY
             }
         }
@@ -112,10 +142,11 @@ class YggdrasilVpnService : VpnService() {
     /**
      * Loads the persisted config (generating+saving a fresh one, with a new
      * identity, only the very first time this ever runs), then overwrites just
-     * its "Peers" array with [peers] - see the class doc for why identity and
-     * peer list are treated so differently here.
+     * its "Peers" field with a single-element array containing [peer] - see the
+     * class doc for why identity and peer stay so separate, and why only ever
+     * one peer at a time.
      */
-    private fun buildConfig(peers: List<String>): ByteArray {
+    private fun buildConfig(peer: String): ByteArray {
         val file = configFile()
         val json = if (file.exists()) {
             JSONObject(file.readText(Charsets.UTF_8))
@@ -129,7 +160,7 @@ class YggdrasilVpnService : VpnService() {
         // the only interface this app uses.
         json.put("AdminListen", "none")
         json.put("IfName", "none")
-        json.put("Peers", JSONArray(peers))
+        json.put("Peers", JSONArray(listOf(peer)))
         val updated = json.toString()
         file.writeText(updated, Charsets.UTF_8)
         return updated.toByteArray(Charsets.UTF_8)
@@ -143,8 +174,8 @@ class YggdrasilVpnService : VpnService() {
         return CHANNEL_ID
     }
 
-    private fun start(peers: List<String>) {
-        if (!started.compareAndSet(false, true)) return
+    private fun start(candidates: List<String>) {
+        if (!running.compareAndSet(false, true)) return
 
         val notification = Notification.Builder(this, notificationChannel())
             .setContentTitle(getString(nu.bruijn.rcvehicle.R.string.app_name))
@@ -153,18 +184,29 @@ class YggdrasilVpnService : VpnService() {
             .build()
         startForeground(NOTIFICATION_ID, notification)
 
+        monitorThread = thread(name = "YggdrasilPeerMonitor") { PeerMonitor(candidates).run() }
+    }
+
+    private fun stop() {
+        if (!running.compareAndSet(true, false)) return
+        monitorThread?.interrupt()
+        monitorThread = null
+        disconnectMesh()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    /** Brings the mesh + TUN up on exactly [peer]. Only ever called from
+     * [PeerMonitor]'s thread - never concurrently with [disconnectMesh]. */
+    private fun connectMesh(peer: String): Boolean {
         try {
-            yggdrasil.startJSON(buildConfig(peers))
+            yggdrasil.startJSON(buildConfig(peer))
         } catch (e: Exception) {
-            Log.e(TAG, "yggdrasil startJSON failed", e)
-            started.set(false)
-            stopSelf()
-            return
+            Log.e(TAG, "yggdrasil startJSON failed for $peer", e)
+            return false
         }
 
         val address = yggdrasil.addressString
-        addressString = address
-
         val builder = Builder()
             .addAddress(address, 7)
             .addRoute("200::", 7)
@@ -184,30 +226,42 @@ class YggdrasilVpnService : VpnService() {
         val parcel = builder.establish()
         if (parcel == null || !parcel.fileDescriptor.valid()) {
             Log.e(TAG, "VpnService.Builder.establish() failed")
-            stop()
-            return
+            runCatching { yggdrasil.stop() }
+            return false
         }
         tunnel = parcel
         readerStream = FileInputStream(parcel.fileDescriptor)
         writerStream = FileOutputStream(parcel.fileDescriptor)
+        meshUp.set(true)
+        addressString = address
+        activePeerUri = peer
 
         // Two plain background threads, not coroutines: both loops spend their
         // whole life blocked in a synchronous read (FileInputStream.read()/
         // Yggdrasil.recvBuffer()) - a dedicated OS thread each, interrupted on
-        // stop(), is simpler and more predictable here than adapting blocking Go/
-        // JNI calls to a coroutine dispatcher for no real benefit.
+        // disconnectMesh(), is simpler and more predictable here than adapting
+        // blocking Go/JNI calls to a coroutine dispatcher for no real benefit.
         readerThread = thread(name = "YggdrasilTunReader") { pumpTunToYggdrasil() }
         writerThread = thread(name = "YggdrasilTunWriter") { pumpYggdrasilToTun() }
+        return true
     }
 
-    private fun stop() {
-        if (!started.compareAndSet(true, false)) return
+    /** Tears down the current mesh + TUN session, if any - leaves the outer
+     * foreground-service/monitor-thread lifecycle untouched, so [PeerMonitor]
+     * can call this to switch peers without a full service restart. Any
+     * in-flight UDP control/video packets are lost for the ~1-2s this takes;
+     * ControlLink's own heartbeat/failsafe (>300ms silence -> neutral) is what
+     * makes that an acceptable cost for "peer got meaningfully worse" rather
+     * than something this class needs to hide. */
+    private fun disconnectMesh() {
+        if (!meshUp.compareAndSet(true, false)) return
 
         try {
             yggdrasil.stop()
         } catch (_: Exception) {
         }
         addressString = null
+        activePeerUri = null
 
         readerStream?.let { runCatching { it.close() } }
         readerStream = null
@@ -220,22 +274,74 @@ class YggdrasilVpnService : VpnService() {
         readerThread = null
         writerThread?.interrupt()
         writerThread = null
+    }
 
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+    /**
+     * Keeps the mesh connected through the best of [candidates], re-measuring
+     * periodically and switching when it's worth the reconnect cost. Runs for
+     * as long as the outer service does (see [running]) on its own thread.
+     */
+    private inner class PeerMonitor(private val candidates: List<String>) {
+        private var activeLatencyMs: Long? = null
+
+        fun run() {
+            while (running.get()) {
+                val results = PeerLatencyProbe.measureAll(candidates)
+                latestStatuses = results
+                evaluate(results)
+                val interval = if (meshUp.get()) STEADY_INTERVAL_MS else RETRY_INTERVAL_MS
+                try {
+                    Thread.sleep(interval)
+                } catch (_: InterruptedException) {
+                    return
+                }
+            }
+        }
+
+        private fun evaluate(results: List<PeerLatencyProbe.Status>) {
+            val best = results.filter { it.latencyMs != null }.minByOrNull { it.latencyMs!! } ?: run {
+                // Nothing reachable this round - if we were connected, the active
+                // peer is presumably among the now-unreachable ones; tear down so
+                // the app-level UI reflects reality instead of showing a stale
+                // "connected" address that no longer routes anywhere.
+                if (meshUp.get()) disconnectMesh()
+                return
+            }
+
+            val current = activePeerUri
+            val shouldSwitch = when {
+                current == null -> true
+                results.find { it.uri == current }?.latencyMs == null -> true // current died
+                best.uri != current && activeLatencyMs != null &&
+                    best.latencyMs!! < activeLatencyMs!! * SWITCH_IMPROVEMENT_FACTOR -> true
+                else -> false
+            }
+
+            if (shouldSwitch) {
+                if (meshUp.get()) disconnectMesh()
+                if (connectMesh(best.uri)) {
+                    activeLatencyMs = best.latencyMs
+                    Log.i(TAG, "connected via ${best.uri} (${best.latencyMs}ms)")
+                } else {
+                    activeLatencyMs = null
+                }
+            } else if (best.uri == current) {
+                activeLatencyMs = best.latencyMs
+            }
+        }
     }
 
     /** TUN -> Yggdrasil: whatever the OS wants to send out over the mesh. */
     private fun pumpTunToYggdrasil() {
         val buf = ByteArray(65535)
-        while (started.get() && !Thread.currentThread().isInterrupted) {
+        while (meshUp.get() && !Thread.currentThread().isInterrupted) {
             val input = readerStream ?: break
             if (!input.fd.valid()) break
             try {
                 val n = input.read(buf)
                 if (n > 0) yggdrasil.sendBuffer(buf, n.toLong())
             } catch (e: Exception) {
-                if (started.get()) Log.i(TAG, "tun->yggdrasil: $e")
+                if (meshUp.get()) Log.i(TAG, "tun->yggdrasil: $e")
                 break
             }
         }
@@ -244,7 +350,7 @@ class YggdrasilVpnService : VpnService() {
     /** Yggdrasil -> TUN: whatever arrived over the mesh, headed back into Android. */
     private fun pumpYggdrasilToTun() {
         val buf = ByteArray(65535)
-        while (started.get() && !Thread.currentThread().isInterrupted) {
+        while (meshUp.get() && !Thread.currentThread().isInterrupted) {
             val output = writerStream ?: break
             if (!output.fd.valid()) break
             try {
@@ -254,7 +360,7 @@ class YggdrasilVpnService : VpnService() {
                 // Same ENOBUFS-is-not-fatal caveat the reference implementation
                 // notes (AdguardForAndroid#724) - a full socket buffer momentarily
                 // rejecting a write isn't a reason to tear the whole tunnel down.
-                if (started.get() && !e.toString().contains("ENOBUFS")) {
+                if (meshUp.get() && !e.toString().contains("ENOBUFS")) {
                     Log.i(TAG, "yggdrasil->tun: $e")
                     break
                 }

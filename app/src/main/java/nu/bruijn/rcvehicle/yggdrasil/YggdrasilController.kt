@@ -15,10 +15,13 @@ object YggdrasilController {
      * via an Activity (VpnService.prepare()'s contract) before calling [start]. */
     fun prepareIntent(context: Context): Intent? = VpnService.prepare(context)
 
-    fun start(context: Context, peers: List<String>) {
+    /** [candidates] is a pool, not a fixed peer list - the service measures and
+     * auto-selects the best one, and keeps re-evaluating for as long as it runs.
+     * See YggdrasilVpnService/PeerMonitor's docs. */
+    fun start(context: Context, candidates: List<String>) {
         val intent = Intent(context, YggdrasilVpnService::class.java).apply {
             action = YggdrasilVpnService.ACTION_START
-            putExtra(YggdrasilVpnService.EXTRA_PEERS, peers.toTypedArray())
+            putExtra(YggdrasilVpnService.EXTRA_PEERS, candidates.toTypedArray())
         }
         context.startForegroundService(intent)
     }
@@ -33,4 +36,12 @@ object YggdrasilController {
     /** Null until the node has actually come up and negotiated an address - poll
      * this rather than assuming [start] returning means it's ready. */
     fun address(): String? = YggdrasilVpnService.runningAddress
+
+    /** The one candidate the mesh is currently actually connected through, or
+     * null if none is (yet). */
+    fun activePeer(): String? = YggdrasilVpnService.activePeer
+
+    /** Latest latency-probe results across the whole candidate pool, refreshed
+     * on PeerMonitor's own cadence - not re-measured on demand by calling this. */
+    fun peerStatuses(): List<PeerLatencyProbe.Status> = YggdrasilVpnService.peerStatuses
 }
