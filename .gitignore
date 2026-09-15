@@ -10,3 +10,7 @@
 local.properties
 app/build/
 .kotlin/
+# Signed release build artifacts - attached to GitHub Releases, not committed.
+/release-artifacts/
+# Built from libs/yggdrasil-go via scripts/build_yggdrasil_aar.sh, not source.
+app/libs/*.aar
