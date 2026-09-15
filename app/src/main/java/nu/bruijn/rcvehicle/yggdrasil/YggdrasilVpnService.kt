@@ -86,6 +86,24 @@ class YggdrasilVpnService : VpnService() {
         // ~1-2s ControlLink failsafe blip on top of the last one.
         private const val WIFI_RECONNECT_DEBOUNCE_MS = 10_000L
 
+        // How long after ANY successful connect (initial, a latency-triggered
+        // switch, or a wifi-triggered redial) to ignore further reconnect
+        // triggers entirely, whatever caused them. Confirmed on real hardware as
+        // a real problem without this: ConnectivityManager.registerNetworkCallback()
+        // always replays the *current* matching network(s) immediately on
+        // registration - not a real "wifi changed" event - and capability
+        // updates keep trickling in for a few seconds while a connection
+        // settles, so a phone that was already on wifi when the service started
+        // would get a spurious reconnect trigger seconds after its first
+        // successful connect, landing while PeerMonitor's normal measurement
+        // pass was *also* about to run and switch peers on nothing more than
+        // routine latency-measurement noise between two similarly-good
+        // candidates. Observed as a real switch 3 seconds after initial
+        // connect, tcp://vpn.itrus.su:7991 (46ms) -> tcp://cirno.nadeko.net:44441
+        // (15ms) - not a wrong choice exactly, but not worth the reconnect cost
+        // for noise this close, this soon.
+        private const val MIN_SETTLE_MS = 15_000L
+
         // Not a binder connection: callers (YggdrasilController) only ever need a
         // cheap "is it up, what's its address/peer status" poll from another
         // Activity, nowhere near hot enough to justify bindService()'s ceremony.
@@ -114,6 +132,7 @@ class YggdrasilVpnService : VpnService() {
 
     @Volatile private var activePeerUri: String? = null
     @Volatile private var latestStatuses: List<PeerLatencyProbe.Status> = emptyList()
+    @Volatile private var lastConnectAtMs = 0L
 
     // Set from the wifi NetworkCallback (a binder/connectivity thread, not
     // PeerMonitor's own), consumed only by PeerMonitor.run() - keeps every
@@ -312,6 +331,7 @@ class YggdrasilVpnService : VpnService() {
         meshUp.set(true)
         addressString = address
         activePeerUri = peer
+        lastConnectAtMs = System.currentTimeMillis()
 
         // Two plain background threads, not coroutines: both loops spend their
         // whole life blocked in a synchronous read (FileInputStream.read()/
@@ -363,6 +383,20 @@ class YggdrasilVpnService : VpnService() {
 
         fun run() {
             while (running.get()) {
+                val sinceConnect = System.currentTimeMillis() - lastConnectAtMs
+                if (meshUp.get() && sinceConnect < MIN_SETTLE_MS) {
+                    // Just connected (for any reason) - discard whatever woke us
+                    // early rather than act on it, and sleep only the remaining
+                    // settle time so a genuine change noticed right after it
+                    // still gets picked up promptly once settled, not after a
+                    // full STEADY_INTERVAL_MS. See MIN_SETTLE_MS's doc.
+                    forceReconnect.set(false)
+                    try {
+                        Thread.sleep(MIN_SETTLE_MS - sinceConnect)
+                    } catch (_: InterruptedException) {
+                    }
+                    continue
+                }
                 if (forceReconnect.compareAndSet(true, false)) {
                     activePeerUri?.let { peer ->
                         Log.i(TAG, "redialing $peer (network change)")
