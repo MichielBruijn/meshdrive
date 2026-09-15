@@ -50,12 +50,31 @@ object PeerLatencyProbe {
 
     /** Probes every candidate in parallel (plain threads, not coroutines - this
      * runs from a background service thread, not a coroutine scope) so a bad
-     * candidate's timeout doesn't stack onto the next one's. */
+     * candidate's timeout doesn't stack onto the next one's.
+     *
+     * The calling thread (PeerMonitor's) can legitimately get interrupted
+     * *during* one of the joins below - e.g. a wifi-availability change asking
+     * it to redial sooner - which would otherwise propagate an uncaught
+     * InterruptedException straight out of Thread.join() and crash the whole
+     * service. Caught per-join instead: whichever probe was mid-wait is simply
+     * accepted as unfinished (reported unreachable, same as a real timeout),
+     * remaining candidates still get their full wait, and the interrupted
+     * status is restored on the way out so the caller's own next blocking call
+     * (its Thread.sleep) still sees it and wakes immediately rather than the
+     * signal getting silently swallowed here. */
     fun measureAll(peerUris: List<String>): List<Status> {
         if (peerUris.isEmpty()) return emptyList()
         val results = arrayOfNulls<Status>(peerUris.size)
         val threads = peerUris.mapIndexed { i, uri -> Thread { results[i] = measure(uri) }.apply { start() } }
-        threads.forEach { it.join(CONNECT_TIMEOUT_MS + 500L) }
+        var interrupted = false
+        for (t in threads) {
+            try {
+                t.join(CONNECT_TIMEOUT_MS + 500L)
+            } catch (_: InterruptedException) {
+                interrupted = true
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt()
         return peerUris.mapIndexed { i, uri -> results[i] ?: Status(uri, null) }
     }
 }

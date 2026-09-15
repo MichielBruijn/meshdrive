@@ -4,6 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -76,6 +80,12 @@ class YggdrasilVpnService : VpnService() {
         // "marginally better."
         private const val SWITCH_IMPROVEMENT_FACTOR = 0.7
 
+        // Minimum gap between wifi-triggered forced reconnects - a flapping wifi
+        // signal (weak AP, walking out of range) can fire onAvailable/onLost
+        // repeatedly within seconds; without this, each flap would cost another
+        // ~1-2s ControlLink failsafe blip on top of the last one.
+        private const val WIFI_RECONNECT_DEBOUNCE_MS = 10_000L
+
         // Not a binder connection: callers (YggdrasilController) only ever need a
         // cheap "is it up, what's its address/peer status" poll from another
         // Activity, nowhere near hot enough to justify bindService()'s ceremony.
@@ -104,6 +114,14 @@ class YggdrasilVpnService : VpnService() {
 
     @Volatile private var activePeerUri: String? = null
     @Volatile private var latestStatuses: List<PeerLatencyProbe.Status> = emptyList()
+
+    // Set from the wifi NetworkCallback (a binder/connectivity thread, not
+    // PeerMonitor's own), consumed only by PeerMonitor.run() - keeps every
+    // actual connectMesh()/disconnectMesh() call confined to that one thread,
+    // same as the existing candidate-switch path, rather than racing it.
+    private val forceReconnect = AtomicBoolean()
+    @Volatile private var lastWifiReconnectAtMs = 0L
+    private var wifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
@@ -199,16 +217,60 @@ class YggdrasilVpnService : VpnService() {
             .build()
         startForeground(NOTIFICATION_ID, notification)
 
+        registerWifiCallback()
         monitorThread = thread(name = "YggdrasilPeerMonitor") { PeerMonitor(candidates).run() }
     }
 
     private fun stop() {
         if (!running.compareAndSet(true, false)) return
+        unregisterWifiCallback()
         monitorThread?.interrupt()
         monitorThread = null
         disconnectMesh()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /**
+     * A live yggdrasil peer connection doesn't migrate to a better network on
+     * its own - it just keeps using whatever network it originally dialed out
+     * on (typically mobile data, if that's what was available when the mesh
+     * first connected). Watches specifically for wifi appearing/disappearing
+     * and, when it does, asks PeerMonitor to redial the current peer - a fresh
+     * outbound connection follows Android's normal default-network preference
+     * (wifi over metered mobile data), so this is enough to make the mesh
+     * actually move onto wifi once it's available, and fall back cleanly when
+     * it isn't. See PeerMonitor.run()'s [forceReconnect] handling.
+     */
+    private fun registerWifiCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            .build()
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = triggerWifiReconnect("wifi available")
+            override fun onLost(network: Network) = triggerWifiReconnect("wifi lost")
+        }
+        wifiNetworkCallback = callback
+        runCatching { cm.registerNetworkCallback(request, callback) }
+            .onFailure { Log.i(TAG, "registerNetworkCallback failed: $it") }
+    }
+
+    private fun unregisterWifiCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        wifiNetworkCallback?.let { cb -> runCatching { cm?.unregisterNetworkCallback(cb) } }
+        wifiNetworkCallback = null
+    }
+
+    private fun triggerWifiReconnect(reason: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastWifiReconnectAtMs < WIFI_RECONNECT_DEBOUNCE_MS) return
+        lastWifiReconnectAtMs = now
+        Log.i(TAG, "$reason - will redial current peer to reconsider network")
+        forceReconnect.set(true)
+        monitorThread?.interrupt()
     }
 
     /** Brings the mesh + TUN up on exactly [peer]. Only ever called from
@@ -301,6 +363,13 @@ class YggdrasilVpnService : VpnService() {
 
         fun run() {
             while (running.get()) {
+                if (forceReconnect.compareAndSet(true, false)) {
+                    activePeerUri?.let { peer ->
+                        Log.i(TAG, "redialing $peer (network change)")
+                        disconnectMesh()
+                        connectMesh(peer)
+                    }
+                }
                 val results = PeerLatencyProbe.measureAll(candidates)
                 latestStatuses = results
                 evaluate(results)
@@ -308,7 +377,10 @@ class YggdrasilVpnService : VpnService() {
                 try {
                     Thread.sleep(interval)
                 } catch (_: InterruptedException) {
-                    return
+                    // Woken early - either stop() (running is now false, the loop
+                    // condition above exits next iteration) or a forced reconnect
+                    // trigger (handled at the top of the next iteration) - either
+                    // way, falling through and re-looping is correct, not returning.
                 }
             }
         }
