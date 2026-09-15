@@ -1,15 +1,19 @@
 package nu.bruijn.rcvehicle.vehicle
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -78,13 +82,44 @@ class VehicleForegroundService : Service() {
         }
     }
 
+    // Android 14+ requires actually HOLDING the runtime permission matching each
+    // declared foreground service type at the moment startForeground() is called
+    // for that type, or the call throws outright - confirmed on real hardware as a
+    // real crash ("problem with the phone"-style): denying just the CAMERA
+    // permission crashed the service on start, since the manifest declares
+    // camera+microphone+location unconditionally and the plain 2-arg
+    // startForeground(id, notification) uses every type the manifest declares
+    // regardless of what's actually granted. Building the type set from what's
+    // actually held right now - denied ones simply aren't requested, exactly like
+    // VideoSender/AudioSender/GPS already no-op gracefully when their own
+    // permission check fails - lets the service start fine either way; it'll pick
+    // up newly-granted permissions next time this is called (every time
+    // VehicleActivity (re)starts it).
+    private fun grantedForegroundServiceTypes(): Int {
+        var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        }
+        return types
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = Notification.Builder(this, channelId)
             .setContentTitle(getString(nu.bruijn.rcvehicle.R.string.app_name))
             .setContentText(getString(nu.bruijn.rcvehicle.R.string.vehicle_notification_text))
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .build()
-        startForeground(1, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(1, notification, grantedForegroundServiceTypes())
+        } else {
+            startForeground(1, notification)
+        }
         return START_STICKY
     }
 

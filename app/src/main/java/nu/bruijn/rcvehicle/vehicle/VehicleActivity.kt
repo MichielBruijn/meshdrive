@@ -67,8 +67,8 @@ class VehicleActivity : AppCompatActivity() {
 
     companion object {
         private const val YGGDRASIL_PACKAGE = "eu.neilalexander.yggdrasil"
-        private const val DEFAULT_MAX_SPEED_FOR_FULL_STEER_LIMIT_KMH = 20f
-        private const val DEFAULT_MAX_STEER_REDUCTION_FRACTION = 0.6f
+        private const val DEFAULT_MAX_SPEED_FOR_FULL_STEER_LIMIT_KMH = 10f
+        private const val DEFAULT_MAX_STEER_REDUCTION_FRACTION = 0.5f
     }
 
     private var service: VehicleForegroundService? = null
@@ -172,9 +172,9 @@ class VehicleActivity : AppCompatActivity() {
      * Scales steer deflection down as speed increases, symmetric around center -
      * the app-side, real-speed equivalent of the firmware's own
      * applySteerOutput()/STEERING_LIMIT. maxSpeedForFullSteerLimitKmh/
-     * maxSteerReductionFraction default to a starting point (full steering below
-     * ~walking pace, keeping 40% of range at/above a brisk 20 km/h) and are tuned
-     * live from the controller's debug sliders (ControlFrame.SteerLimitConfig).
+     * maxSteerReductionFraction default to a starting point (full steering near a
+     * stop, keeping half of range at/above a brisk 10 km/h) and are tuned live
+     * from the controller's debug sliders (ControlFrame.SteerLimitConfig).
      */
     private fun applySpeedSteerLimit(steer: Float, speedKmh: Float): Float {
         val speedFraction = (speedKmh / maxSpeedForFullSteerLimitKmh).coerceIn(0f, 1f)

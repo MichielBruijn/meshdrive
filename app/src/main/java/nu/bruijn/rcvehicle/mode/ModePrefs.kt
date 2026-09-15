@@ -130,7 +130,7 @@ class ModePrefs(private val context: Context) {
      * ControllerDriveActivity re-sends the underlying ControlFrame messages once
      * connected, since a fresh vehicle doesn't otherwise know these were on.
      */
-    val autoQualityEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUTO_QUALITY] ?: false }
+    val autoQualityEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUTO_QUALITY] ?: true }
     suspend fun setAutoQualityEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.AUTO_QUALITY] = enabled }
     }
@@ -140,8 +140,8 @@ class ModePrefs(private val context: Context) {
         context.dataStore.edit { it[Keys.SAFE_STEERING_ENABLED] = enabled }
     }
 
-    val safeSteeringMaxSpeedKmh: Flow<Int> = context.dataStore.data.map { it[Keys.SAFE_STEERING_MAX_SPEED_KMH] ?: 20 }
-    val safeSteeringReductionPercent: Flow<Int> = context.dataStore.data.map { it[Keys.SAFE_STEERING_REDUCTION_PERCENT] ?: 60 }
+    val safeSteeringMaxSpeedKmh: Flow<Int> = context.dataStore.data.map { it[Keys.SAFE_STEERING_MAX_SPEED_KMH] ?: 10 }
+    val safeSteeringReductionPercent: Flow<Int> = context.dataStore.data.map { it[Keys.SAFE_STEERING_REDUCTION_PERCENT] ?: 50 }
     suspend fun setSafeSteeringConfig(maxSpeedKmh: Int, reductionPercent: Int) {
         context.dataStore.edit { prefs ->
             prefs[Keys.SAFE_STEERING_MAX_SPEED_KMH] = maxSpeedKmh
@@ -157,7 +157,7 @@ class ModePrefs(private val context: Context) {
     }
 
     /** Debug GPS/speed overlay checkbox - see ControlFrame.TelemetryEnable's doc. */
-    val telemetryEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.TELEMETRY_ENABLED] ?: false }
+    val telemetryEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.TELEMETRY_ENABLED] ?: true }
     suspend fun setTelemetryEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.TELEMETRY_ENABLED] = enabled }
     }

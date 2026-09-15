@@ -352,8 +352,8 @@ class ControllerDriveActivity : AppCompatActivity() {
         // DEFAULT_MAX_STEER_REDUCTION_FRACTION - both sides start in agreement, so
         // Safe steering works sensibly even if these sliders are never touched.
         // Overwritten below once the persisted values (if any) have loaded.
-        seekSteerLimitMaxSpeed.progress = 20
-        seekSteerLimitReduction.progress = 60
+        seekSteerLimitMaxSpeed.progress = 10
+        seekSteerLimitReduction.progress = 50
         textSteerLimitMaxSpeed.text = getString(R.string.controller_steer_limit_max_speed, seekSteerLimitMaxSpeed.progress)
         textSteerLimitReduction.text = getString(R.string.controller_steer_limit_reduction, seekSteerLimitReduction.progress)
 
