@@ -649,7 +649,7 @@ class VehicleActivity : AppCompatActivity() {
         // does exactly that for 960x720, "Set of requested inputs/outputs not
         // supported by HAL" - not just lower quality, no video at all without this),
         // so this is always "the highest that actually works", not a hardcoded guess.
-        videoSender.start(controllerAddress.hostAddress!!, VideoPacket.PORT, VideoQuality.HIGH)
+        videoSender.start(controllerAddress.hostAddress!!, VideoPacket.PORT, pairingSecret, VideoQuality.HIGH)
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED

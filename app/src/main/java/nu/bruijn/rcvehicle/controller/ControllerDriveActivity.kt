@@ -514,9 +514,13 @@ class ControllerDriveActivity : AppCompatActivity() {
     }
 
     private fun startVideo(surface: SurfaceTexture) {
+        val secret = vehicleSecret ?: run {
+            log("no pairing secret - can't authenticate video")
+            return
+        }
         videoReceiver.stop() // idempotent - safe even if it wasn't already running
         try {
-            videoReceiver.start(VideoPacket.PORT, Surface(surface), VIDEO_WIDTH, VIDEO_HEIGHT)
+            videoReceiver.start(VideoPacket.PORT, Surface(surface), secret, VIDEO_WIDTH, VIDEO_HEIGHT)
             log("listening for video on port ${VideoPacket.PORT}")
         } catch (e: Exception) {
             log("video listen failed: ${e::class.simpleName}: ${e.message}")

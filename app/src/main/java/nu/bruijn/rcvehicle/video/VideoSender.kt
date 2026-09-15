@@ -21,6 +21,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import kotlin.math.atan2
 import kotlin.math.sqrt
+import nu.bruijn.rcvehicle.control.SignedFrame
 
 /**
  * Captures the back camera via Camera2, encodes it to H.264 with the hardware
@@ -70,6 +71,7 @@ class VideoSender(private val context: Context) {
     private var socket: DatagramSocket? = null
     private var remoteAddress: InetAddress? = null
     private var remotePort: Int = 0
+    private lateinit var secret: ByteArray
     private var frameId = 0
     private var sensorOrientation = 90
     @Volatile private var displayRotationDegrees = 0
@@ -130,13 +132,18 @@ class VideoSender(private val context: Context) {
     private var currentQuality = VideoQuality.MEDIUM
     private var fps = 20
 
+    /** [secret] is the PairingSecret shared with the controller that scanned this
+     * vehicle's QR code (see SignedFrame/PairingSecret) - every fragment is tagged
+     * with it so a stranger on the mesh can't watch this camera feed. */
     fun start(
         remoteHost: String,
         remotePort: Int,
+        secret: ByteArray,
         quality: VideoQuality = VideoQuality.MEDIUM,
         fps: Int = 20,
     ) {
         this.remotePort = remotePort
+        this.secret = secret
         this.fps = fps
         remoteAddress = InetAddress.getByName(remoteHost)
         socket = DatagramSocket()
@@ -305,7 +312,8 @@ class VideoSender(private val context: Context) {
         val id = frameId++
         for (chunk in VideoPacket.fragment(id, data, displayRotationDegrees)) {
             try {
-                sock.send(DatagramPacket(chunk, chunk.size, addr, remotePort))
+                val signed = SignedFrame.sign(chunk, secret)
+                sock.send(DatagramPacket(signed, signed.size, addr, remotePort))
             } catch (_: Exception) {
                 // best-effort, same reasoning as ControlLink - a lost fragment drops
                 // this frame on the receiving end, the next one recovers

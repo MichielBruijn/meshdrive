@@ -13,6 +13,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import nu.bruijn.rcvehicle.control.SignedFrame
 
 /**
  * Receives VideoSender's UDP fragments, reassembles complete access units, and
@@ -67,7 +68,10 @@ class VideoReceiver {
     /** True if anything was actually recorded (no video ever arrived otherwise). */
     fun stopRecording(): Boolean = recorder?.stop().also { recorder = null } ?: false
 
-    fun start(port: Int, outputSurface: Surface, width: Int = 640, height: Int = 480) {
+    /** [secret] is the PairingSecret from the vehicle's QR code (see SignedFrame/
+     * PairingSecret) - fragments that don't carry a valid tag for it are dropped
+     * before ever reaching handlePacket(), same as one that never arrived. */
+    fun start(port: Int, outputSurface: Surface, secret: ByteArray, width: Int = 640, height: Int = 480) {
         videoWidth = width
         videoHeight = height
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
@@ -85,7 +89,8 @@ class VideoReceiver {
             while (isActive) {
                 try {
                     sock.receive(packet)
-                    handlePacket(packet.data.copyOf(packet.length))
+                    val verified = SignedFrame.verify(packet.data, packet.length, secret) ?: continue
+                    handlePacket(verified)
                 } catch (e: Exception) {
                     if (!isActive) break
                     onError?.invoke("receive error: ${e.message}")
