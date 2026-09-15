@@ -12,6 +12,7 @@ import android.util.Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import nu.bruijn.rcvehicle.control.SignedFrame
 
 /**
  * Captures a mic, encodes it AAC-LC with the hardware/software codec MediaCodec
@@ -50,6 +51,7 @@ class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) 
     private var socket: DatagramSocket? = null
     private var remoteAddress: InetAddress? = null
     private var remotePort: Int = 0
+    private lateinit var secret: ByteArray
     private var seq = 0
     private var audioThread: HandlerThread? = null
     private val lock = Any()
@@ -57,8 +59,12 @@ class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) 
 
     var onError: ((String) -> Unit)? = null
 
-    fun start(remoteHost: String, remotePort: Int) {
+    /** [secret] is the PairingSecret from the vehicle's QR code (see SignedFrame/
+     * PairingSecret) - every packet is tagged with it so a stranger on the mesh
+     * can't listen in on either direction of the voice link. */
+    fun start(remoteHost: String, remotePort: Int, secret: ByteArray) {
         this.remotePort = remotePort
+        this.secret = secret
         remoteAddress = InetAddress.getByName(remoteHost)
         socket = DatagramSocket()
         seq = 0
@@ -135,7 +141,7 @@ class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) 
     private fun sendFrame(data: ByteArray) {
         val sock = socket ?: return
         val addr = remoteAddress ?: return
-        val packet = AudioPacket.encode(seq++, SAMPLE_RATE_INDEX, CHANNEL_CONFIG, data)
+        val packet = SignedFrame.sign(AudioPacket.encode(seq++, SAMPLE_RATE_INDEX, CHANNEL_CONFIG, data), secret)
         try {
             sock.send(DatagramPacket(packet, packet.size, addr, remotePort))
         } catch (_: Exception) {

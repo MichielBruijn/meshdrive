@@ -528,9 +528,13 @@ class ControllerDriveActivity : AppCompatActivity() {
     }
 
     private fun startAudio() {
+        val secret = vehicleSecret ?: run {
+            log("no pairing secret - can't authenticate audio")
+            return
+        }
         audioReceiver.stop()
         try {
-            audioReceiver.start(AudioPacket.VEHICLE_TO_CONTROLLER_PORT)
+            audioReceiver.start(AudioPacket.VEHICLE_TO_CONTROLLER_PORT, secret)
             log("listening for audio on port ${AudioPacket.VEHICLE_TO_CONTROLLER_PORT}")
         } catch (e: Exception) {
             log("audio listen failed: ${e::class.simpleName}: ${e.message}")
@@ -546,6 +550,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         if (audioReceiver.muted) return
         val addr = vehicleAddress
         if (addr.isNullOrEmpty()) return
+        val secret = vehicleSecret ?: return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -553,7 +558,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         }
         micSender.stop()
         try {
-            micSender.start(addr, AudioPacket.CONTROLLER_TO_VEHICLE_PORT)
+            micSender.start(addr, AudioPacket.CONTROLLER_TO_VEHICLE_PORT, secret)
         } catch (e: Exception) {
             log("mic start failed: ${e::class.simpleName}: ${e.message}")
         }

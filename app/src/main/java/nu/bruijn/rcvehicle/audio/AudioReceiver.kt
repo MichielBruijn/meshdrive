@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.nio.ByteBuffer
+import nu.bruijn.rcvehicle.control.SignedFrame
 
 /**
  * Receives AudioSender's UDP packets, decodes them for live playback through
@@ -31,6 +32,7 @@ class AudioReceiver {
     private var receiveJob: Job? = null
     private var lastFedSeq = -1
     private var decoderSampleRateIndex = -1
+    private lateinit var secret: ByteArray
 
     var onError: ((String) -> Unit)? = null
 
@@ -55,7 +57,11 @@ class AudioReceiver {
     /** True if anything was actually recorded. */
     fun stopRecording(): Boolean = recorder?.stop().also { recorder = null } ?: false
 
-    fun start(port: Int) {
+    /** [secret] is the PairingSecret from the vehicle's QR code (see SignedFrame/
+     * PairingSecret) - packets that don't carry a valid tag for it are dropped
+     * before ever reaching handlePacket(), same as one that never arrived. */
+    fun start(port: Int, secret: ByteArray) {
+        this.secret = secret
         socket = DatagramSocket(port)
 
         val minBufSize = AudioTrack.getMinBufferSize(AudioSender.SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -85,7 +91,8 @@ class AudioReceiver {
             while (isActive) {
                 try {
                     sock.receive(packet)
-                    handlePacket(packet.data.copyOf(packet.length))
+                    val verified = SignedFrame.verify(packet.data, packet.length, secret) ?: continue
+                    handlePacket(verified)
                 } catch (e: Exception) {
                     if (!isActive) break
                     onError?.invoke("audio receive error: ${e.message}")

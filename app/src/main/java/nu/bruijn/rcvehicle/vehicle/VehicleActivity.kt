@@ -377,7 +377,7 @@ class VehicleActivity : AppCompatActivity() {
 
         controllerVoiceReceiver.onError = { msg -> log("controller voice: $msg") }
         try {
-            controllerVoiceReceiver.start(AudioPacket.CONTROLLER_TO_VEHICLE_PORT)
+            controllerVoiceReceiver.start(AudioPacket.CONTROLLER_TO_VEHICLE_PORT, pairingSecret)
         } catch (e: Exception) {
             log("controller voice listen failed: ${e::class.simpleName}: ${e.message}")
         }
@@ -655,7 +655,7 @@ class VehicleActivity : AppCompatActivity() {
             PackageManager.PERMISSION_GRANTED
         ) {
             audioSender.onError = { msg -> log("audio: $msg") }
-            audioSender.start(controllerAddress.hostAddress!!, AudioPacket.VEHICLE_TO_CONTROLLER_PORT)
+            audioSender.start(controllerAddress.hostAddress!!, AudioPacket.VEHICLE_TO_CONTROLLER_PORT, pairingSecret)
         } else {
             log("audio: RECORD_AUDIO permission not granted, skipping")
         }
