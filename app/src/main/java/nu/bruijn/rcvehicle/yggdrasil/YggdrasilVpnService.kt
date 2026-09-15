@@ -466,6 +466,7 @@ class YggdrasilVpnService : VpnService() {
                 break
             }
         }
+        onPumpThreadExited()
     }
 
     /** Yggdrasil -> TUN: whatever arrived over the mesh, headed back into Android. */
@@ -487,5 +488,33 @@ class YggdrasilVpnService : VpnService() {
                 }
             }
         }
+        onPumpThreadExited()
+    }
+
+    /**
+     * Confirmed on real hardware as a real bug: turning wifi off out from under
+     * an active session (its TCP peer connection was bound to that now-gone
+     * interface) killed both pump threads via IOExceptions, but nothing ever
+     * reset [meshUp] - PeerMonitor kept thinking the session was fine, since its
+     * own periodic probe opens a *fresh* connection each time (which happily
+     * succeeds over whatever network is current, e.g. cellular after wifi
+     * drops) rather than checking the specific dead session. The mesh never
+     * reconnected on its own; "controller signal lost, doesn't come back."
+     *
+     * Called from whichever pump thread notices the break first - disconnectMesh()
+     * is idempotent (guarded by meshUp's compareAndSet), so if both reader and
+     * writer die around the same moment (the common case - the same network
+     * loss affects both), only the first call here actually tears anything down.
+     * The `meshUp.get()` check skips this entirely when the thread instead
+     * exited because disconnectMesh() was already called deliberately elsewhere
+     * (a peer switch, a wifi-triggered redial, or stop()) - that path already
+     * has its own reconnect handling, this would just be redundant.
+     */
+    private fun onPumpThreadExited() {
+        if (!meshUp.get()) return
+        Log.i(TAG, "mesh session died unexpectedly, forcing reconnect")
+        disconnectMesh()
+        forceReconnect.set(true)
+        monitorThread?.interrupt()
     }
 }
