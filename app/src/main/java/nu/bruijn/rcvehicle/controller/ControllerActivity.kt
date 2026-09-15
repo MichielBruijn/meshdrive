@@ -11,6 +11,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.journeyapps.barcodescanner.ScanContract
@@ -58,7 +59,7 @@ class ControllerActivity : AppCompatActivity() {
             qrScanLauncher.launch(
                 ScanOptions()
                     .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                    .setPrompt("Scan de QR-code op het scherm van de voertuig-telefoon")
+                    .setPrompt(getString(R.string.controller_scan_qr_prompt))
                     .setBeepEnabled(false)
                     .setOrientationLocked(false)
             )
@@ -107,8 +108,13 @@ class ControllerActivity : AppCompatActivity() {
             maxLines = 1
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
+        // Also used by the remove-confirmation dialog below, so it can name the
+        // vehicle instead of showing a raw address - defaults to the address itself
+        // until the name lookup resolves (should be near-instant in practice).
+        var resolvedName = address
         lifecycleScope.launch {
             val name = modePrefs.nameForVehicle(address)
+            resolvedName = name
             // The raw address is still useful for troubleshooting a specific link,
             // just not front-and-center - only tacked on in debug mode.
             val debugEnabled = modePrefs.debugEnabled.first()
@@ -119,8 +125,17 @@ class ControllerActivity : AppCompatActivity() {
             contentDescription = getString(R.string.controller_remove_vehicle)
             setPadding(dp(16), 0, dp(4), 0)
             setOnClickListener {
-                lifecycleScope.launch { modePrefs.removeRecentVehicleAddress(address) }
-                container.removeView(this@apply.parent as View)
+                // One accidental tap used to delete a paired vehicle outright, no
+                // way back - a confirmation costs nothing and this is exactly the
+                // kind of destructive-by-a-single-tap action worth guarding.
+                AlertDialog.Builder(this@ControllerActivity)
+                    .setMessage(getString(R.string.controller_remove_vehicle_confirm, resolvedName))
+                    .setPositiveButton(R.string.controller_remove_vehicle) { _, _ ->
+                        lifecycleScope.launch { modePrefs.removeRecentVehicleAddress(address) }
+                        container.removeView(this@apply.parent as View)
+                    }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
             }
         }
         val row = LinearLayout(this).apply {

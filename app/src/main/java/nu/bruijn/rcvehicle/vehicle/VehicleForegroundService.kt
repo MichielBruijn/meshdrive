@@ -80,8 +80,8 @@ class VehicleForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = Notification.Builder(this, channelId)
-            .setContentTitle("RC Vehicle")
-            .setContentText("Wachten op besturing…")
+            .setContentTitle(getString(nu.bruijn.rcvehicle.R.string.app_name))
+            .setContentText(getString(nu.bruijn.rcvehicle.R.string.vehicle_notification_text))
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .build()
         startForeground(1, notification)

@@ -34,6 +34,7 @@ import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.audio.AudioPacket
 import nu.bruijn.rcvehicle.audio.AudioReceiver
 import nu.bruijn.rcvehicle.audio.AudioSender
+import nu.bruijn.rcvehicle.common.showPermissionDeniedIfAny
 import nu.bruijn.rcvehicle.control.ControlFrame
 import nu.bruijn.rcvehicle.control.ControlLink
 import nu.bruijn.rcvehicle.mode.ModePrefs
@@ -579,6 +580,11 @@ class ControllerDriveActivity : AppCompatActivity() {
         startAudio()
         startMic()
         textureVideoView.surfaceTexture?.let { startVideo(it) }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        showPermissionDeniedIfAny(grantResults)
     }
 
     private var isRecording = false

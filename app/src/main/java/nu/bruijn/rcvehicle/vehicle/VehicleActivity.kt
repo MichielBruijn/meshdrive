@@ -40,6 +40,7 @@ import nu.bruijn.rcvehicle.audio.AudioSender
 import nu.bruijn.rcvehicle.common.InternetNetworkBinder
 import nu.bruijn.rcvehicle.common.QrCode
 import nu.bruijn.rcvehicle.common.YggdrasilAddress
+import nu.bruijn.rcvehicle.common.showPermissionDeniedIfAny
 import nu.bruijn.rcvehicle.control.ControlFrame
 import nu.bruijn.rcvehicle.control.ControlLink
 import nu.bruijn.rcvehicle.mode.ModePrefs
@@ -651,6 +652,11 @@ class VehicleActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         recheckYggdrasil?.invoke()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        showPermissionDeniedIfAny(grantResults)
     }
 
     override fun onDestroy() {

@@ -3,8 +3,9 @@
     <string name="mode_picker_title">Choose mode</string>
     <string name="mode_controller">Controller</string>
     <string name="mode_vehicle">Vehicle</string>
-    <string name="main_debug_mode">Debug mode (addresses, logs, FPS/latency, wifi fallback)</string>
+    <string name="main_debug_mode">Debug mode (addresses, logs, FPS/latency, wifi fallback, Safe steering, video quality, GPS/speed)</string>
     <string name="vehicle_debug_title">ESP32 connection</string>
+    <string name="vehicle_notification_text">Waiting for control input…</string>
     <string name="vehicle_connect_usb">Connect via USB cable</string>
     <string name="vehicle_usb_connected">Connected</string>
     <string name="vehicle_check_update">Check for update</string>
@@ -23,10 +24,12 @@
     <string name="controller_vehicle_address_hint">Vehicle\'s Yggdrasil address</string>
     <string name="controller_connect">Connect</string>
     <string name="controller_scan_qr">Add vehicle (scan QR code)</string>
+    <string name="controller_scan_qr_prompt">Scan the QR code on the vehicle phone\'s screen</string>
     <string name="controller_recent_vehicles">Recent vehicles</string>
     <string name="controller_vehicle_online">Online</string>
     <string name="controller_vehicle_offline">Offline</string>
     <string name="controller_remove_vehicle">Remove</string>
+    <string name="controller_remove_vehicle_confirm">Remove %1$s from recent vehicles?</string>
     <string name="controller_steer_limit">Safe steering</string>
     <string name="controller_steer_limit_max_speed">Max speed: %1$d km/h</string>
     <string name="controller_steer_limit_reduction">Reduction: %1$d%%</string>
@@ -43,4 +46,6 @@
     <string name="controller_telemetry">GPS/speed</string>
     <string name="vehicle_qr_content_description">QR code with own Yggdrasil address</string>
     <string name="vehicle_open_yggdrasil">Open Yggdrasil</string>
+    <string name="permission_denied_open_settings">Permission denied - some features won\'t work until it\'s enabled</string>
+    <string name="permission_open_settings_action">Settings</string>
 </resources>
