@@ -9,7 +9,6 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
-import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -26,6 +25,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -47,6 +47,7 @@ import nu.bruijn.rcvehicle.mode.ModePrefs
 import nu.bruijn.rcvehicle.video.VideoPacket
 import nu.bruijn.rcvehicle.video.VideoQuality
 import nu.bruijn.rcvehicle.video.VideoSender
+import nu.bruijn.rcvehicle.yggdrasil.YggdrasilController
 import java.net.InetAddress
 
 /**
@@ -66,7 +67,6 @@ import java.net.InetAddress
 class VehicleActivity : AppCompatActivity() {
 
     companion object {
-        private const val YGGDRASIL_PACKAGE = "eu.neilalexander.yggdrasil"
         private const val DEFAULT_MAX_SPEED_FOR_FULL_STEER_LIMIT_KMH = 10f
         private const val DEFAULT_MAX_STEER_REDUCTION_FRACTION = 0.5f
     }
@@ -312,46 +312,33 @@ class VehicleActivity : AppCompatActivity() {
         val textYggdrasilStatus = findViewById<TextView>(R.id.textYggdrasilStatus)
         val buttonOpenYggdrasil = findViewById<Button>(R.id.buttonOpenYggdrasil)
 
-        // Checks (not auto-launches) - forcing an app switch to Yggdrasil/F-Droid every
-        // single time this screen opened, e.g. right after a reboot before Yggdrasil was
-        // back up yet, was disruptive during repeated testing. Now just explains the
-        // situation and offers a button; re-run from onResume (recheckYggdrasil below) so
-        // coming back from actually opening Yggdrasil picks up the result without needing
-        // to relaunch this screen.
+        // MainActivity already started the embedded YggdrasilVpnService (with VPN
+        // consent granted) before launching this screen - this just polls for the
+        // address it ends up with, since startForegroundService() returning doesn't
+        // mean the mesh node has actually come up yet (config load, TUN establish,
+        // first startJSON() all happen asynchronously inside the service). Re-run
+        // from onResume (recheckYggdrasil below) so coming back to this screen (e.g.
+        // after granting VPN consent) picks the address up without a relaunch.
         fun checkYggdrasil() {
             lifecycleScope.launch {
-                // getLaunchIntentForPackage() returns null both when Yggdrasil isn't running
-                // AND when it isn't installed at all - checked explicitly so an actually-
-                // missing install gets a real prompt (F-Droid, where the plan's pairing step
-                // assumes it's distributed) instead of just repeating "not found" forever.
-                if (!isPackageInstalled(YGGDRASIL_PACKAGE)) {
-                    textYggdrasilStatus.text = "Yggdrasil app not installed"
-                    buttonOpenYggdrasil.text = "Install from F-Droid"
-                    buttonOpenYggdrasil.visibility = View.VISIBLE
-                    buttonOpenYggdrasil.setOnClickListener {
-                        runCatching {
-                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://f-droid.org/packages/$YGGDRASIL_PACKAGE/")))
-                        }
+                val address = withTimeoutOrNull(5000) {
+                    var found = YggdrasilController.address()
+                    while (found == null) {
+                        delay(200)
+                        found = YggdrasilController.address()
                     }
-                    return@launch
+                    found
                 }
-                val address = withContext(Dispatchers.IO) { YggdrasilAddress.detect() }
                 if (address != null) {
                     textOwnAddress.text = "Own Yggdrasil address: $address"
                     textYggdrasilStatus.text = ""
                     buttonOpenYggdrasil.visibility = View.GONE
                     imageQr.setImageBitmap(QrCode.encode(address))
                 } else {
-                    // There's no public API to enable Yggdrasil's VPN from another app
-                    // (its own state broadcast is LocalBroadcastManager-only, checked in
-                    // its source - not visible outside its own process), so a button to
-                    // bring its own UI to the front is the best available shortcut.
-                    textYggdrasilStatus.text = "Yggdrasil not running - open it and enable the VPN"
+                    textYggdrasilStatus.text = "Starting Yggdrasil mesh…"
                     buttonOpenYggdrasil.text = getString(R.string.vehicle_open_yggdrasil)
                     buttonOpenYggdrasil.visibility = View.VISIBLE
-                    buttonOpenYggdrasil.setOnClickListener {
-                        packageManager.getLaunchIntentForPackage(YGGDRASIL_PACKAGE)?.let { startActivity(it) }
-                    }
+                    buttonOpenYggdrasil.setOnClickListener { checkYggdrasil() }
                 }
             }
         }
@@ -603,9 +590,6 @@ class VehicleActivity : AppCompatActivity() {
             }
         }
     }
-
-    private fun isPackageInstalled(packageName: String): Boolean =
-        runCatching { packageManager.getPackageInfo(packageName, 0) }.isSuccess
 
     /**
      * Null on timeout (best-effort - callers just fall back to whatever the phone's

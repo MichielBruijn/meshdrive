@@ -20,15 +20,6 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
-    <!-- Android 11+ package visibility filtering otherwise hides whether Yggdrasil is
-         installed at all (getPackageInfo()/getLaunchIntentForPackage() for it silently
-         report "not found" even when it's genuinely there) unless it's explicitly
-         declared here - confirmed on real hardware as the app insisting Yggdrasil
-         wasn't installed when it clearly was. -->
-    <queries>
-        <package android:name="eu.neilalexander.yggdrasil" />
-    </queries>
-
     <!-- The ESP32 only ever speaks plain http/ws (no TLS capability), both as its own
          AP and on a home network - cleartext must stay allowed for this app.
          allowBackup deliberately false: the only real data this app stores is the
@@ -96,6 +87,18 @@
             android:name=".vehicle.VehicleForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice|camera|microphone|location" />
+
+        <!-- Embedded Yggdrasil mesh node - see YggdrasilVpnService's doc for why this
+             replaces relying on the separate eu.neilalexander.yggdrasil app. -->
+        <service
+            android:name=".yggdrasil.YggdrasilVpnService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="connectedDevice">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
 
     </application>
 

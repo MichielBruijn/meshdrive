@@ -37,6 +37,10 @@ android {
 }
 
 dependencies {
+    // Built from libs/yggdrasil-go (git submodule) via scripts/build_yggdrasil_aar.sh -
+    // not published anywhere, so a plain files() dependency on the checked-in .aar
+    // rather than a Maven coordinate. See YggdrasilVpnService's doc.
+    implementation(files("libs/yggdrasil.aar"))
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")

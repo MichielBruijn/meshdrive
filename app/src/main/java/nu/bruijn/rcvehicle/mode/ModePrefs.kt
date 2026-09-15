@@ -34,6 +34,7 @@ class ModePrefs(private val context: Context) {
         val SAFE_STEERING_REDUCTION_PERCENT = intPreferencesKey("safe_steering_reduction_percent")
         val AUDIO_MUTED = booleanPreferencesKey("audio_muted")
         val TELEMETRY_ENABLED = booleanPreferencesKey("telemetry_enabled")
+        val YGGDRASIL_PEERS = stringPreferencesKey("yggdrasil_peers")
     }
 
     private val MAX_RECENT_VEHICLES = 10
@@ -160,5 +161,21 @@ class ModePrefs(private val context: Context) {
     val telemetryEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.TELEMETRY_ENABLED] ?: true }
     suspend fun setTelemetryEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.TELEMETRY_ENABLED] = enabled }
+    }
+
+    /**
+     * Yggdrasil peer URIs (e.g. "tls://host:port") the embedded node connects out
+     * to - see YggdrasilController/YggdrasilVpnService. Empty by default: this app
+     * ships with no baked-in peer list (deliberately - a stale hardcoded public
+     * peer is a worse failure mode than "not connected yet", and the intended
+     * end-state per direct request is a fleet's own private relay here, not the
+     * public peer list, once that's designed). Until at least one peer is
+     * configured, the node only reaches other devices via LAN multicast.
+     */
+    val yggdrasilPeers: Flow<List<String>> = context.dataStore.data.map { prefs ->
+        prefs[Keys.YGGDRASIL_PEERS]?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
+    }
+    suspend fun setYggdrasilPeers(peers: List<String>) {
+        context.dataStore.edit { it[Keys.YGGDRASIL_PEERS] = peers.joinToString("\n") }
     }
 }

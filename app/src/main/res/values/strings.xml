@@ -45,7 +45,10 @@
     <string name="controller_quality_auto">Auto</string>
     <string name="controller_telemetry">GPS/speed</string>
     <string name="vehicle_qr_content_description">QR code with own Yggdrasil address</string>
-    <string name="vehicle_open_yggdrasil">Open Yggdrasil</string>
+    <string name="vehicle_open_yggdrasil">Retry</string>
     <string name="permission_denied_open_settings">Permission denied - some features won\'t work until it\'s enabled</string>
     <string name="permission_open_settings_action">Settings</string>
+    <string name="yggdrasil_notification_text">Yggdrasil mesh active</string>
+    <string name="main_yggdrasil_peers_hint">Yggdrasil peers (comma-separated, e.g. tls://host:port)</string>
+    <string name="main_yggdrasil_peers_save">Save peers</string>
 </resources>

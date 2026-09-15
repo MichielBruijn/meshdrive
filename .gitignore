@@ -14,3 +14,4 @@ app/build/
 /release-artifacts/
 # Built from libs/yggdrasil-go via scripts/build_yggdrasil_aar.sh, not source.
 app/libs/*.aar
+app/libs/*-sources.jar
