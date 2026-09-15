@@ -139,8 +139,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun startEmbeddedYggdrasilThenLaunch(mode: AppMode) {
         lifecycleScope.launch {
-            val peers = modePrefs.yggdrasilPeers.first()
-            YggdrasilController.start(this@MainActivity, peers)
+            val candidates = modePrefs.yggdrasilPeerCandidates.first()
+            YggdrasilController.start(this@MainActivity, candidates)
             launchModeActivity(mode)
         }
     }

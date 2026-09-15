@@ -9,6 +9,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import nu.bruijn.rcvehicle.yggdrasil.YggdrasilBootstrapPeers
 
 private val Context.dataStore by preferencesDataStore(name = "mode_prefs")
 
@@ -164,18 +165,28 @@ class ModePrefs(private val context: Context) {
     }
 
     /**
-     * Yggdrasil peer URIs (e.g. "tls://host:port") the embedded node connects out
-     * to - see YggdrasilController/YggdrasilVpnService. Empty by default: this app
-     * ships with no baked-in peer list (deliberately - a stale hardcoded public
-     * peer is a worse failure mode than "not connected yet", and the intended
-     * end-state per direct request is a fleet's own private relay here, not the
-     * public peer list, once that's designed). Until at least one peer is
-     * configured, the node only reaches other devices via LAN multicast.
+     * User-entered Yggdrasil peer URIs (e.g. "tls://host:port"), from the debug
+     * field on the mode picker - see [yggdrasilPeerCandidates] for what actually
+     * gets passed to YggdrasilController.start(). Empty by default and never
+     * pre-filled: this stays purely "what the user typed," so a saved custom or
+     * test peer is never silently mixed with YggdrasilBootstrapPeers' list.
      */
     val yggdrasilPeers: Flow<List<String>> = context.dataStore.data.map { prefs ->
         prefs[Keys.YGGDRASIL_PEERS]?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
     }
     suspend fun setYggdrasilPeers(peers: List<String>) {
         context.dataStore.edit { it[Keys.YGGDRASIL_PEERS] = peers.joinToString("\n") }
+    }
+
+    /**
+     * The actual candidate pool for YggdrasilController.start(): the user's own
+     * [yggdrasilPeers] if they've set any, otherwise YggdrasilBootstrapPeers'
+     * community-peer snapshot - so a fresh install can still reach the mesh
+     * without the user needing to find/paste a peer first, while any custom
+     * (or a fleet's future private-relay) entry always fully overrides the
+     * bootstrap set rather than being merged with it.
+     */
+    val yggdrasilPeerCandidates: Flow<List<String>> = yggdrasilPeers.map { custom ->
+        custom.ifEmpty { YggdrasilBootstrapPeers.CANDIDATES }
     }
 }
