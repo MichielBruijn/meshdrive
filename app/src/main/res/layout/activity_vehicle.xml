@@ -37,14 +37,31 @@
          out an address - textYggdrasilStatus/buttonOpenYggdrasil below explain why and
          offer a manual way to open Yggdrasil, instead of forcing an app switch (a forced
          switch every time this screen opens, e.g. right after a reboot before Yggdrasil
-         is back up, was disruptive during repeated testing). -->
-    <ImageView
-        android:id="@+id/imageYggdrasilQr"
-        android:layout_width="200dp"
-        android:layout_height="200dp"
+         is back up, was disruptive during repeated testing).
+
+         Wrapped in generous solid white padding, not just the bare QR bitmap on
+         whatever this screen's own (often dark) background is - confirmed on real
+         hardware as a real scanning problem: a small bright QR surrounded by a much
+         darker screen throws off the SCANNING phone's camera auto-exposure (it
+         meters the whole frame, not just the code), overexposing/washing out the
+         QR and making it hard to focus on, especially in a dim room. A large,
+         uniformly bright quiet zone well beyond the code itself gives that
+         camera's auto-exposure a sane, evenly-lit scene to meter regardless of
+         this screen's own theme or the room's ambient light. -->
+    <FrameLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
         android:layout_gravity="center_horizontal"
-        android:contentDescription="@string/vehicle_qr_content_description" />
+        android:background="@android:color/white"
+        android:padding="24dp">
+
+        <ImageView
+            android:id="@+id/imageYggdrasilQr"
+            android:layout_width="200dp"
+            android:layout_height="200dp"
+            android:contentDescription="@string/vehicle_qr_content_description" />
+    </FrameLayout>
 
     <TextView
         android:id="@+id/textYggdrasilStatus"
