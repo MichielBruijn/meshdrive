@@ -11,6 +11,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.control.ControlLink
+import nu.bruijn.rcvehicle.control.VehiclePairing
 import nu.bruijn.rcvehicle.mode.ModePrefs
 
 /**
@@ -37,9 +39,17 @@ class ControllerActivity : AppCompatActivity() {
     // still required for the debug-mode manual-address path below.
     private val qrScanLauncher = registerForActivityResult(ScanContract()) { result ->
         result.contents?.let { scanned ->
-            val address = scanned.trim()
+            val pair = VehiclePairing.decode(scanned)
+            if (pair == null) {
+                Toast.makeText(this, "Not a valid MeshDrive vehicle QR code", Toast.LENGTH_LONG).show()
+                return@registerForActivityResult
+            }
+            val (address, secret) = pair
             findViewById<EditText>(R.id.editVehicleAddress).setText(address)
-            connect(address)
+            lifecycleScope.launch {
+                modePrefs.setVehicleSecret(address, secret)
+                connect(address)
+            }
         }
     }
 
@@ -66,7 +76,19 @@ class ControllerActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.buttonConnectRtc).setOnClickListener {
-            connect(editAddress.text.toString().trim())
+            // Debug-only manual path - expects the same "address|secret" pairing
+            // string VehicleActivity's debug section now shows (see its doc),
+            // not a bare address, since ControlLink needs the secret too.
+            val pair = VehiclePairing.decode(editAddress.text.toString())
+            if (pair == null) {
+                Toast.makeText(this, "Paste the full pairing string (address|secret), not just the address", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
+            val (address, secret) = pair
+            lifecycleScope.launch {
+                modePrefs.setVehicleSecret(address, secret)
+                connect(address)
+            }
         }
     }
 
@@ -152,7 +174,12 @@ class ControllerActivity : AppCompatActivity() {
         container.addView(row)
 
         lifecycleScope.launch {
-            val online = ControlLink.probeOnline(address)
+            // No stored secret means this address was never actually paired via
+            // QR (or predates authentication) - can't probe it at all now, same
+            // as it being offline, since an unsigned Ping is simply dropped by
+            // the vehicle rather than answered.
+            val secret = modePrefs.secretForVehicle(address)
+            val online = secret != null && ControlLink.probeOnline(address, secret)
             dot.setTextColor(if (online) Color.parseColor("#4CAF50") else Color.parseColor("#9E9E9E"))
             dot.contentDescription = getString(
                 if (online) R.string.controller_vehicle_online else R.string.controller_vehicle_offline
@@ -160,12 +187,27 @@ class ControllerActivity : AppCompatActivity() {
         }
     }
 
+    /** Also handles re-connecting to an already-known vehicle (tapping a
+     * recent-vehicles row), where the secret isn't in scope at the call site -
+     * always looked up from ModePrefs rather than threaded through every caller. */
     private fun connect(address: String) {
         if (address.isEmpty()) return
-        Log.d("RCDebug", "connecting to $address")
-        lifecycleScope.launch { modePrefs.addRecentVehicleAddress(address) }
-        startActivity(Intent(this, ControllerDriveActivity::class.java).apply {
-            putExtra(ControllerDriveActivity.EXTRA_VEHICLE_ADDRESS, address)
-        })
+        lifecycleScope.launch {
+            val secret = modePrefs.secretForVehicle(address)
+            if (secret == null) {
+                // A stale entry from before authentication existed, or the QR/
+                // manual-paste flow failed to store it - either way, there's no
+                // secret to sign with, so this can't actually control anything.
+                // Re-pairing (scan the QR again) is the only way forward.
+                Toast.makeText(this@ControllerActivity, "No pairing secret for this vehicle - scan its QR code again", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            Log.d("RCDebug", "connecting to $address")
+            modePrefs.addRecentVehicleAddress(address)
+            startActivity(Intent(this@ControllerActivity, ControllerDriveActivity::class.java).apply {
+                putExtra(ControllerDriveActivity.EXTRA_VEHICLE_ADDRESS, address)
+                putExtra(ControllerDriveActivity.EXTRA_VEHICLE_SECRET, secret)
+            })
+        }
     }
 }

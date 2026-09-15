@@ -41,8 +41,17 @@ class ControlLink {
     private var receiveJob: Job? = null
     private var pingJob: Job? = null
 
-    /** Controller side: connect to the vehicle's known Yggdrasil address. */
-    fun connect(address: String, port: Int) {
+    // Set by connect()/listen() - every send() signs with this, every receive
+    // verifies against it and silently drops anything that doesn't match (see
+    // SignedFrame's doc). Never null after either of those runs; a caller trying
+    // to send/receive before one of them ran is a programming error, not
+    // something to handle gracefully.
+    private lateinit var secret: ByteArray
+
+    /** Controller side: connect to the vehicle's known Yggdrasil address.
+     * [secret] is the PairingSecret learned from that vehicle's QR code. */
+    fun connect(address: String, port: Int, secret: ByteArray) {
+        this.secret = secret
         socket = DatagramSocket().apply {
             connect(InetAddress.getByName(address), port)
             markHighPriority()
@@ -115,7 +124,7 @@ class ControlLink {
         val sock = socket ?: return
         val addr = lastSenderAddress ?: return
         val port = lastSenderPort
-        val data = ControlFrame.encodeTelemetry(hasFix, speedKmh, lat, lon)
+        val data = SignedFrame.sign(ControlFrame.encodeTelemetry(hasFix, speedKmh, lat, lon), secret)
         scope.launch {
             try {
                 sock.send(DatagramPacket(data, data.size, addr, port))
@@ -144,7 +153,8 @@ class ControlLink {
             while (isActive) {
                 try {
                     sock.receive(packet)
-                    when (val decoded = ControlFrame.decode(packet.data, packet.length)) {
+                    val verified = SignedFrame.verify(packet.data, packet.length, secret) ?: continue
+                    when (val decoded = ControlFrame.decode(verified, verified.size)) {
                         is ControlFrame.Decoded.Pong -> onRtt(SystemClock.elapsedRealtime() - decoded.sentAtMs)
                         is ControlFrame.Decoded.Telemetry -> onTelemetry?.invoke(decoded)
                         else -> {}
@@ -157,9 +167,10 @@ class ControlLink {
     }
 
     private fun sendBytes(data: ByteArray) {
+        val signed = SignedFrame.sign(data, secret)
         scope.launch {
             try {
-                socket?.send(DatagramPacket(data, data.size))
+                socket?.send(DatagramPacket(signed, signed.size))
             } catch (_: Exception) {
                 // best-effort, unreliable by design - a dropped frame is fine, the next
                 // tick will send a fresh one
@@ -172,8 +183,12 @@ class ControlLink {
      * onReceived also gets the packet's source address, so the vehicle can learn
      * the controller's Yggdrasil address from its control traffic and use it as
      * the destination for the video stream, without a separate discovery step.
+     * [secret] is this vehicle's own PairingSecret - anything that doesn't carry
+     * a valid tag for it is silently dropped before ever reaching ControlFrame.decode(),
+     * same as a packet that never arrived (see SignedFrame's doc).
      */
-    fun listen(port: Int, onReceived: (ControlFrame.Decoded, InetAddress) -> Unit) {
+    fun listen(port: Int, secret: ByteArray, onReceived: (ControlFrame.Decoded, InetAddress) -> Unit) {
+        this.secret = secret
         val sock = DatagramSocket(port).apply { markHighPriority() }
         socket = sock
         receiveJob = scope.launch {
@@ -182,14 +197,15 @@ class ControlLink {
             while (isActive) {
                 try {
                     sock.receive(packet)
+                    val verified = SignedFrame.verify(packet.data, packet.length, secret) ?: continue
                     lastSenderAddress = packet.address
                     lastSenderPort = packet.port
-                    val decoded = ControlFrame.decode(packet.data, packet.length) ?: continue
+                    val decoded = ControlFrame.decode(verified, verified.size) ?: continue
                     if (decoded is ControlFrame.Decoded.Ping) {
                         // Latency probe reply - handled here rather than surfaced to
                         // onReceived, since every caller of listen() just wants real
                         // control traffic, not to know about the debug ping/pong.
-                        val pong = ControlFrame.encodePong(decoded.sentAtMs)
+                        val pong = SignedFrame.sign(ControlFrame.encodePong(decoded.sentAtMs), secret)
                         try {
                             sock.send(DatagramPacket(pong, pong.size, packet.address, packet.port))
                         } catch (_: Exception) {
@@ -234,18 +250,19 @@ class ControlLink {
          * (a genuinely offline vehicle) to roughly attempts*timeoutMs instead of
          * one long wait, while still recovering from a single dropped probe.
          */
-        suspend fun probeOnline(address: String, attempts: Int = 3, timeoutMs: Int = 1200): Boolean = withContext(Dispatchers.IO) {
+        suspend fun probeOnline(address: String, secret: ByteArray, attempts: Int = 3, timeoutMs: Int = 1200): Boolean = withContext(Dispatchers.IO) {
             val inetAddress = runCatching { InetAddress.getByName(address) }.getOrNull() ?: return@withContext false
             for (attempt in 1..attempts) {
                 try {
                     DatagramSocket().use { socket ->
                         socket.soTimeout = timeoutMs
-                        val ping = ControlFrame.encodePing(SystemClock.elapsedRealtime())
+                        val ping = SignedFrame.sign(ControlFrame.encodePing(SystemClock.elapsedRealtime()), secret)
                         socket.send(DatagramPacket(ping, ping.size, inetAddress, PORT))
                         val buffer = ByteArray(64)
                         val packet = DatagramPacket(buffer, buffer.size)
                         socket.receive(packet) // throws SocketTimeoutException if nothing replies in time
-                        if (ControlFrame.decode(packet.data, packet.length) is ControlFrame.Decoded.Pong) {
+                        val verified = SignedFrame.verify(packet.data, packet.length, secret)
+                        if (verified != null && ControlFrame.decode(verified, verified.size) is ControlFrame.Decoded.Pong) {
                             return@withContext true
                         }
                     }

@@ -44,6 +44,8 @@ import nu.bruijn.rcvehicle.common.YggdrasilAddress
 import nu.bruijn.rcvehicle.common.showPermissionDeniedIfAny
 import nu.bruijn.rcvehicle.control.ControlFrame
 import nu.bruijn.rcvehicle.control.ControlLink
+import nu.bruijn.rcvehicle.control.PairingSecret
+import nu.bruijn.rcvehicle.control.VehiclePairing
 import nu.bruijn.rcvehicle.mode.ModePrefs
 import nu.bruijn.rcvehicle.video.VideoPacket
 import nu.bruijn.rcvehicle.video.VideoQuality
@@ -77,6 +79,10 @@ class VehicleActivity : AppCompatActivity() {
     private val tickHandler = Handler(Looper.getMainLooper())
     private var tickRunnable: Runnable? = null
     private val controlLink = ControlLink()
+    // Loaded once per process, not per onCreate() - PairingSecret.load() itself
+    // is idempotent (same file), but there's no reason to touch disk twice if
+    // this Activity gets recreated.
+    private val pairingSecret by lazy { PairingSecret.load(applicationContext) }
     private val videoSender = VideoSender(this)
     private val audioSender = AudioSender(android.media.MediaRecorder.AudioSource.CAMCORDER)
 
@@ -331,10 +337,13 @@ class VehicleActivity : AppCompatActivity() {
                     found
                 }
                 if (address != null) {
-                    textOwnAddress.text = "Own Yggdrasil address: $address"
+                    // The full pairing string (not just the address) - debug mode's
+                    // manual-paste path (ControllerActivity) needs the secret too now,
+                    // same as the QR below.
+                    textOwnAddress.text = "Own pairing string: ${VehiclePairing.encode(address, pairingSecret)}"
                     textYggdrasilStatus.text = ""
                     buttonOpenYggdrasil.visibility = View.GONE
-                    imageQr.setImageBitmap(QrCode.encode(address))
+                    imageQr.setImageBitmap(QrCode.encode(VehiclePairing.encode(address, pairingSecret)))
                 } else {
                     textYggdrasilStatus.text = "Starting Yggdrasil mesh…"
                     buttonOpenYggdrasil.text = getString(R.string.vehicle_open_yggdrasil)
@@ -388,7 +397,7 @@ class VehicleActivity : AppCompatActivity() {
             logView.text = ""
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
-                    controlLink.listen(ControlLink.PORT) { decoded, senderAddress ->
+                    controlLink.listen(ControlLink.PORT, pairingSecret) { decoded, senderAddress ->
                         when (decoded) {
                             is ControlFrame.Decoded.Control -> {
                                 log("control #${decoded.seq}: steer=${decoded.steer} throttle=${decoded.throttle}")

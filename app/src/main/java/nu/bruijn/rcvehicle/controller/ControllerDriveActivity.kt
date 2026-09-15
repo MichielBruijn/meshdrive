@@ -62,6 +62,7 @@ class ControllerDriveActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_VEHICLE_ADDRESS = "vehicle_address"
+        const val EXTRA_VEHICLE_SECRET = "vehicle_secret"
 
         // The decoder is configured for VideoQuality.HIGH's dimensions regardless of
         // which preset the vehicle is actually encoding at right now: decoders can
@@ -137,6 +138,7 @@ class ControllerDriveActivity : AppCompatActivity() {
     private lateinit var videoContainerView: FrameLayout
     private lateinit var modePrefs: ModePrefs
     private var vehicleAddress: String? = null
+    private var vehicleSecret: ByteArray? = null
 
     private fun log(line: String) = runOnUiThread {
         Log.d("RCDebug", line)
@@ -161,6 +163,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         }
 
         vehicleAddress = intent.getStringExtra(EXTRA_VEHICLE_ADDRESS)
+        vehicleSecret = intent.getByteArrayExtra(EXTRA_VEHICLE_SECRET)
         val address = vehicleAddress
         modePrefs = ModePrefs(applicationContext)
         logView = findViewById(R.id.textRtcLog)
@@ -288,13 +291,19 @@ class ControllerDriveActivity : AppCompatActivity() {
             override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
         }
 
+        val secret = vehicleSecret
         if (address.isNullOrEmpty()) {
             log("no vehicle address given")
+        } else if (secret == null) {
+            // ControllerActivity.connect() always resolves+passes a secret before
+            // starting this Activity - reaching here means something started it
+            // directly instead, which shouldn't happen outside of that flow.
+            log("no pairing secret given - can't authenticate control traffic")
         } else {
             connectStartedAtMs = System.currentTimeMillis()
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
-                    controlLink.connect(address, ControlLink.PORT)
+                    controlLink.connect(address, ControlLink.PORT, secret)
                     log("UDP control link connected to $address:${ControlLink.PORT}")
                     controlLink.startPing(
                         onRtt = { rtt ->

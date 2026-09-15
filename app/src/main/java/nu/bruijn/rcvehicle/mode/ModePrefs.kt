@@ -1,6 +1,7 @@
 package nu.bruijn.rcvehicle.mode
 
 import android.content.Context
+import android.util.Base64
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -36,6 +37,7 @@ class ModePrefs(private val context: Context) {
         val AUDIO_MUTED = booleanPreferencesKey("audio_muted")
         val TELEMETRY_ENABLED = booleanPreferencesKey("telemetry_enabled")
         val YGGDRASIL_PEERS = stringPreferencesKey("yggdrasil_peers")
+        val VEHICLE_SECRETS = stringPreferencesKey("vehicle_secrets")
     }
 
     private val MAX_RECENT_VEHICLES = 10
@@ -75,6 +77,42 @@ class ModePrefs(private val context: Context) {
             prefs[Keys.RECENT_VEHICLES] = current.filter { it != address }.joinToString("\n")
         }
         removeVehicleName(address)
+        removeVehicleSecret(address)
+    }
+
+    private fun decodeVehicleSecrets(raw: String?): Map<String, ByteArray> =
+        raw?.split("\n")?.filter { it.isNotBlank() }
+            ?.mapNotNull { line ->
+                line.split("=", limit = 2).let {
+                    if (it.size != 2) return@let null
+                    val secret = runCatching { Base64.decode(it[1], Base64.NO_WRAP) }.getOrNull() ?: return@let null
+                    it[0] to secret
+                }
+            }
+            ?.toMap() ?: emptyMap()
+
+    private fun encodeVehicleSecrets(secrets: Map<String, ByteArray>): String =
+        secrets.entries.joinToString("\n") { "${it.key}=${Base64.encodeToString(it.value, Base64.NO_WRAP)}" }
+
+    /** The PairingSecret learned when this vehicle's QR was scanned (see
+     * VehiclePairing) - null for an address that was never actually paired this
+     * way (e.g. a stale/manual entry from before authentication existed). */
+    suspend fun secretForVehicle(address: String): ByteArray? {
+        val secrets = decodeVehicleSecrets(context.dataStore.data.first()[Keys.VEHICLE_SECRETS])
+        return secrets[address]
+    }
+
+    suspend fun setVehicleSecret(address: String, secret: ByteArray) {
+        context.dataStore.edit { prefs ->
+            val current = decodeVehicleSecrets(prefs[Keys.VEHICLE_SECRETS])
+            prefs[Keys.VEHICLE_SECRETS] = encodeVehicleSecrets(current + (address to secret))
+        }
+    }
+
+    private suspend fun removeVehicleSecret(address: String) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.VEHICLE_SECRETS] = encodeVehicleSecrets(decodeVehicleSecrets(prefs[Keys.VEHICLE_SECRETS]) - address)
+        }
     }
 
     private fun decodeVehicleNames(raw: String?): Map<String, String> =
