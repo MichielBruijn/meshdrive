@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Sampled from the logo artwork's own background (cropped_ChatGPT Image
+         Sep 16, 2026, 11_10_19 PM.png) - the adaptive icon's background layer
+         matches it so the foreground's padding reads as seamless, not as a
+         visibly separate shrunk graphic on a different-colored square. -->
+    <color name="ic_launcher_background">#0A121E</color>
+</resources>
