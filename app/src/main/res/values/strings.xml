@@ -59,4 +59,5 @@
     <string name="main_vpn_conflict_message">A VPN (e.g. WireGuard) is already connected on this phone. Android only allows one VPN at a time, so starting MeshDrive will disconnect it. Continue anyway?</string>
     <string name="main_vpn_conflict_continue">Continue</string>
     <string name="main_vpn_conflict_cancel">Cancel</string>
+    <string name="main_copyright">© 2026 Michiel Bruijn. All rights reserved.</string>
 </resources>

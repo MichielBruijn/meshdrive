@@ -79,6 +79,14 @@
         android:textSize="12sp"
         android:alpha="0.6" />
 
+    <TextView
+        android:id="@+id/textCopyright"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/main_copyright"
+        android:textSize="10sp"
+        android:alpha="0.5" />
+
     <!-- Hidden unless a startup check (MainActivity/AppUpdater) actually finds a
          newer GitHub release than this build - not a permanent fixture, so it
          doesn't compete with the two big mode buttons above on every launch. -->
