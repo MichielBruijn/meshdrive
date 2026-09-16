@@ -358,7 +358,22 @@ class VehicleActivity : AppCompatActivity() {
                     textYggdrasilStatus.text = "Starting Yggdrasil mesh…"
                     buttonOpenYggdrasil.text = getString(R.string.vehicle_open_yggdrasil)
                     buttonOpenYggdrasil.visibility = View.VISIBLE
-                    buttonOpenYggdrasil.setOnClickListener { checkYggdrasil() }
+                    buttonOpenYggdrasil.setOnClickListener {
+                        // Confirmed on real hardware as a real bug: this used to
+                        // just re-poll for an address that will never appear if
+                        // YggdrasilController.start() never actually succeeded in
+                        // the first place - no way to recover short of fully
+                        // closing and reopening the app. Actually retries
+                        // starting the mesh now (consent is already granted by
+                        // this point - MainActivity's own flow already went
+                        // through VpnService.prepare() before ever launching
+                        // this screen), then re-polls as before.
+                        lifecycleScope.launch {
+                            val candidates = ModePrefs(applicationContext).yggdrasilPeerCandidates.first()
+                            YggdrasilController.start(this@VehicleActivity, candidates)
+                            checkYggdrasil()
+                        }
+                    }
                 }
             }
         }

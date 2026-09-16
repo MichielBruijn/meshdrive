@@ -87,7 +87,15 @@ class ControllerDriveActivity : AppCompatActivity() {
 
     private val controlLink = ControlLink()
     private val videoReceiver = VideoReceiver()
-    private val audioReceiver = AudioReceiver()
+    // Muted from construction, not just "eventually" via the restore coroutine
+    // below - confirmed on real hardware as a real bug otherwise: that
+    // coroutine sets audioReceiver.muted = true only after several earlier
+    // suspend calls (autoQuality/safeSteering/telemetry reads), and
+    // onResume()'s startAudio()/startMic() run essentially immediately,
+    // often before those finish - a real, audible window of unmuted audio
+    // right at the start of every single connection, exactly what "always
+    // muted until you tap it yourself" was supposed to prevent.
+    private val audioReceiver = AudioReceiver().apply { muted = true }
 
     // Talk-back mic (two-way audio, per direct request) - VOICE_COMMUNICATION, same
     // reasoning as VehicleActivity's own AudioSender doc, gets echo cancellation/
@@ -520,11 +528,8 @@ class ControllerDriveActivity : AppCompatActivity() {
             telemetryEnabled = modePrefs.telemetryEnabled.first()
             checkTelemetry.isChecked = telemetryEnabled
 
-            // Per direct request: audio is muted at the start of every single
-            // connection, always - never carried over from a previous session
-            // as a lasting "stay unmuted" default, only ever turned on by an
-            // explicit tap on this same screen, this same connection.
-            audioReceiver.muted = true
+            // Already muted from construction (see the field's own doc) - just
+            // sync the UI icon to match here.
             applyMuteUi()
             if (!audioReceiver.muted) startMic() else micSender.stop()
         }
