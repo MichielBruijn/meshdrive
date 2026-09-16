@@ -14,11 +14,30 @@ android {
         targetSdk = 35
         versionCode = 3
         versionName = "0.3"
+        buildConfigField("long", "EXPIRES_AT_MS", "0L")
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+        }
+    }
+
+    // "demo" is for a build handed to an outside party for evaluation - self-
+    // expires 6 months after it's built (MainActivity checks BuildConfig.EXPIRES_AT_MS
+    // on launch). "standard" is every other build, including this project's own
+    // day-to-day dev/test installs, and never expires (EXPIRES_AT_MS stays the
+    // defaultConfig's 0L above). Per direct request: this must never accidentally
+    // apply to builds Michiel installs for himself.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("standard") {
+            dimension = "distribution"
+        }
+        create("demo") {
+            dimension = "distribution"
+            val expiresAtMs = System.currentTimeMillis() + 182L * 24 * 60 * 60 * 1000
+            buildConfigField("long", "EXPIRES_AT_MS", "${expiresAtMs}L")
         }
     }
 
@@ -33,6 +52,7 @@ android {
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 }
 

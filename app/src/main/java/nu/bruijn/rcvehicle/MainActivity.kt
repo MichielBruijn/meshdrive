@@ -51,6 +51,21 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // "demo" flavor only (BuildConfig.EXPIRES_AT_MS is 0L, i.e. never, on the
+        // "standard" flavor every other build - including Michiel's own - uses) -
+        // a build handed to an outside party for evaluation stops working 6
+        // months after it was built, full stop, before anything else in this
+        // screen (or the USB-attach relaunch check below) runs.
+        if (BuildConfig.EXPIRES_AT_MS != 0L && System.currentTimeMillis() > BuildConfig.EXPIRES_AT_MS) {
+            setContentView(android.widget.TextView(this).apply {
+                text = getString(R.string.main_trial_expired)
+                textSize = 18f
+                gravity = android.view.Gravity.CENTER
+                setPadding(64, 64, 64, 64)
+            })
+            return
+        }
+
         // The manifest's USB_DEVICE_ATTACHED intent-filter launches a fresh instance
         // of this picker on EVERY USB attach, unconditionally - including while
         // VehicleActivity is already open and driving, which has its own runtime

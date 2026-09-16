@@ -60,4 +60,5 @@
     <string name="main_vpn_conflict_continue">Continue</string>
     <string name="main_vpn_conflict_cancel">Cancel</string>
     <string name="main_copyright">© 2026 Michiel Bruijn. All rights reserved.</string>
+    <string name="main_trial_expired">This evaluation build has expired.\n\nContact Michiel Bruijn to license MeshDrive.</string>
 </resources>
