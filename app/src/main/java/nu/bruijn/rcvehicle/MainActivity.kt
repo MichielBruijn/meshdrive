@@ -1,22 +1,29 @@
 package nu.bruijn.rcvehicle
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import nu.bruijn.rcvehicle.controller.ControllerActivity
 import nu.bruijn.rcvehicle.mode.AppMode
 import nu.bruijn.rcvehicle.mode.ModePrefs
 import nu.bruijn.rcvehicle.vehicle.VehicleActivity
 import nu.bruijn.rcvehicle.yggdrasil.YggdrasilController
+import java.io.File
 
 /** Mode picker: remembers the last choice so relaunch goes straight to that mode. */
 class MainActivity : AppCompatActivity() {
@@ -74,6 +81,7 @@ class MainActivity : AppCompatActivity() {
         val versionName = packageManager.getPackageInfo(packageName, 0).versionName
         val textAppVersion = findViewById<android.widget.TextView>(R.id.textAppVersion)
         textAppVersion.text = "v$versionName"
+        setUpAppUpdateCheck(versionName ?: "0")
 
         val checkDebugMode = findViewById<CheckBox>(R.id.checkDebugMode)
         val editYggdrasilPeers = findViewById<EditText>(R.id.editYggdrasilPeers)
@@ -151,5 +159,71 @@ class MainActivity : AppCompatActivity() {
             AppMode.VEHICLE -> VehicleActivity::class.java
         }
         startActivity(Intent(this@MainActivity, target))
+    }
+
+    /**
+     * Checks GitHub Releases for a newer build of this app itself, silently, on
+     * every launch of this screen - same idea as VehicleActivity's ESP32-firmware
+     * update check (FirmwareUpdater), applied to MeshDrive's own APK (AppUpdater).
+     * Per direct request: a button that "checkt bij opstarten en kan updaten."
+     * Stays invisible unless a genuinely newer release is actually found - this
+     * screen shouldn't nag on every single launch once already up to date.
+     */
+    private fun setUpAppUpdateCheck(currentVersion: String) {
+        val buttonUpdate = findViewById<Button>(R.id.buttonUpdateApp)
+        val textUpdateStatus = findViewById<TextView>(R.id.textUpdateStatus)
+        var pendingRelease: AppUpdater.Release? = null
+
+        lifecycleScope.launch {
+            val release = withContext(Dispatchers.IO) { AppUpdater.fetchLatestRelease() }
+            if (release != null && AppUpdater.isNewer(release.version, currentVersion)) {
+                pendingRelease = release
+                buttonUpdate.text = getString(R.string.main_update_available, release.version)
+                buttonUpdate.visibility = View.VISIBLE
+            }
+        }
+
+        buttonUpdate.setOnClickListener {
+            val release = pendingRelease ?: return@setOnClickListener
+
+            // Android blocks a plain download-and-install even with
+            // REQUEST_INSTALL_PACKAGES in the manifest until the user has
+            // separately allowed this specific app as an install source - send
+            // them to that one-time toggle instead of just silently failing.
+            if (!packageManager.canRequestPackageInstalls()) {
+                textUpdateStatus.text = getString(R.string.main_update_install_permission)
+                textUpdateStatus.visibility = View.VISIBLE
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                return@setOnClickListener
+            }
+
+            buttonUpdate.isEnabled = false
+            textUpdateStatus.visibility = View.VISIBLE
+            textUpdateStatus.text = getString(R.string.main_update_downloading, release.version)
+            lifecycleScope.launch {
+                val bytes = withContext(Dispatchers.IO) { AppUpdater.download(release.downloadUrl) }
+                if (bytes == null) {
+                    textUpdateStatus.text = getString(R.string.main_update_download_failed)
+                    buttonUpdate.isEnabled = true
+                    return@launch
+                }
+                val apkFile = withContext(Dispatchers.IO) {
+                    val dir = File(cacheDir, "updates").apply { mkdirs() }
+                    File(dir, "update.apk").apply { writeBytes(bytes) }
+                }
+                // content:// via FileProvider, not a plain file:// Uri - the system
+                // installer is a different app, which would otherwise reject it
+                // with FileUriExposedException (see the manifest's <provider>).
+                val apkUri = FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", apkFile)
+                startActivity(
+                    Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(apkUri, "application/vnd.android.package-archive")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                )
+                buttonUpdate.isEnabled = true
+            }
+        }
     }
 }

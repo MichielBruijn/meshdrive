@@ -51,4 +51,8 @@
     <string name="yggdrasil_notification_text">Yggdrasil mesh active</string>
     <string name="main_yggdrasil_peers_hint">Yggdrasil peers (comma-separated, e.g. tls://host:port) - overrides the built-in public peer list</string>
     <string name="main_yggdrasil_peers_save">Save peers</string>
+    <string name="main_update_available">Update available: v%1$s</string>
+    <string name="main_update_downloading">Downloading v%1$s…</string>
+    <string name="main_update_download_failed">Download failed</string>
+    <string name="main_update_install_permission">Allow MeshDrive to install updates, then tap again</string>
 </resources>

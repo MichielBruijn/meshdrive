@@ -16,6 +16,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Self-update (MainActivity/AppUpdater): installing a downloaded APK needs
+         this even when the user grants the per-install "allow from this source"
+         prompt the system shows anyway - without it that prompt never appears at
+         all and the install silently does nothing. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
@@ -87,6 +92,19 @@
             android:name=".vehicle.VehicleForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice|camera|microphone|location" />
+
+        <!-- Hands a downloaded update APK (cache/updates/, see AppUpdater) to the
+             system installer as a content:// URI - a file:// one would be rejected
+             (FileUriExposedException) since the installer is a different app. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- Embedded Yggdrasil mesh node - see YggdrasilVpnService's doc for why this
              replaces relying on the separate eu.neilalexander.yggdrasil app. -->
