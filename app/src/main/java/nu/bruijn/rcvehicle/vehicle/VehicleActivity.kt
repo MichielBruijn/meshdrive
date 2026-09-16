@@ -91,7 +91,12 @@ class VehicleActivity : AppCompatActivity() {
     // it can just run for this screen's whole lifetime rather than being tied to
     // maybeStartVideo() the way the outgoing audioSender above is.
     private val controllerVoiceReceiver = AudioReceiver()
-    private var videoStarted = false
+
+    // Who video/audio are currently pointed at - null until the first ever
+    // controller connects. Re-checked (not a one-time latch) so a later
+    // change of control owner (ControlLink.listen()'s ownership lock) also
+    // re-targets the outgoing streams - see maybeStartVideo()'s doc.
+    private var currentVideoControllerAddress: InetAddress? = null
     private var lastRemoteControlAtMs = 0L
 
     // GPS is shared by two independent features - the debug speed/GPS overlay
@@ -646,8 +651,25 @@ class VehicleActivity : AppCompatActivity() {
     }
 
     private fun maybeStartVideo(controllerAddress: InetAddress, log: (String) -> Unit) {
-        if (videoStarted) return
-        videoStarted = true
+        if (currentVideoControllerAddress == controllerAddress) return
+        val isRetarget = currentVideoControllerAddress != null
+        currentVideoControllerAddress = controllerAddress
+
+        if (isRetarget) {
+            // A different controller than the one video/audio are currently
+            // pointed at just took ownership (ControlLink.listen()'s lock) -
+            // confirmed on real hardware as a real bug without this: video/
+            // audio kept streaming to whichever controller connected FIRST
+            // for the rest of the session (controls worked for the new one,
+            // nothing else did). See VideoSender/AudioSender.retarget()'s doc
+            // for why this re-points the running pipelines instead of
+            // restarting them.
+            log("re-targeting video/audio to new controller: ${controllerAddress.hostAddress}")
+            videoSender.retarget(controllerAddress.hostAddress!!)
+            audioSender.retarget(controllerAddress.hostAddress!!)
+            return
+        }
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
             PackageManager.PERMISSION_GRANTED
         ) {

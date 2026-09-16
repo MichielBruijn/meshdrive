@@ -156,6 +156,24 @@ class VideoSender(private val context: Context) {
     }
 
     /**
+     * Re-points an already-running pipeline at a new destination, without
+     * touching the camera/encoder/socket at all - used when a different
+     * controller takes over an already-connected vehicle (VehicleActivity's
+     * maybeStartVideo()). Confirmed on real hardware as a real bug without
+     * this: video kept streaming to whichever controller connected FIRST for
+     * the rest of the session, even after control legitimately changed hands
+     * (the old controller force-stopped, its ownership lock timed out,
+     * someone else connected) - the new controller got working controls but
+     * no video at all. Deliberately NOT a stop()+start() cycle: cameraThread
+     * is a HandlerThread stop() quits for good, so this instance couldn't be
+     * safely restarted anyway - and the running pipeline doesn't need to be,
+     * only where its packets go.
+     */
+    fun retarget(remoteHost: String) {
+        remoteAddress = InetAddress.getByName(remoteHost)
+    }
+
+    /**
      * Switches the live encoder+camera pipeline to a different [VideoQuality] preset
      * without touching the UDP socket, remote address, or orientation tracking - only
      * called after start(). Driven by ControllerDriveActivity's resolution picker /
