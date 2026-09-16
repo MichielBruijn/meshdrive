@@ -220,7 +220,11 @@ class ControllerDriveActivity : AppCompatActivity() {
             textTelemetryOverlay.text = if (t == null || !t.hasFix) {
                 "GPS: no fix"
             } else {
-                "${String.format("%.1f", t.speedKmh)} km/h\n${String.format("%.5f", t.lat)}, ${String.format("%.5f", t.lon)}"
+                // Coordinates deliberately left off this on-screen HUD (a phone
+                // aimed at bystanders while driving shouldn't broadcast exact
+                // position) - still written in full to the .gpx track file
+                // (GpxTrack.addPoint() above), just not shown live.
+                "${String.format("%.1f", t.speedKmh)} km/h"
             }
         }
 
