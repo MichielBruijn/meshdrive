@@ -34,7 +34,6 @@ class ModePrefs(private val context: Context) {
         val SAFE_STEERING_ENABLED = booleanPreferencesKey("safe_steering_enabled")
         val SAFE_STEERING_MAX_SPEED_KMH = intPreferencesKey("safe_steering_max_speed_kmh")
         val SAFE_STEERING_REDUCTION_PERCENT = intPreferencesKey("safe_steering_reduction_percent")
-        val AUDIO_MUTED = booleanPreferencesKey("audio_muted")
         val TELEMETRY_ENABLED = booleanPreferencesKey("telemetry_enabled")
         val YGGDRASIL_PEERS = stringPreferencesKey("yggdrasil_peers")
         val VEHICLE_SECRETS = stringPreferencesKey("vehicle_secrets")
@@ -191,13 +190,6 @@ class ModePrefs(private val context: Context) {
             prefs[Keys.SAFE_STEERING_MAX_SPEED_KMH] = maxSpeedKmh
             prefs[Keys.SAFE_STEERING_REDUCTION_PERCENT] = reductionPercent
         }
-    }
-
-    /** Single toggle for both directions of the controller<->vehicle mic link - see
-     * ControllerDriveActivity's Mute button doc for why it's unified. */
-    val audioMuted: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUDIO_MUTED] ?: false }
-    suspend fun setAudioMuted(muted: Boolean) {
-        context.dataStore.edit { it[Keys.AUDIO_MUTED] = muted }
     }
 
     /** Debug GPS/speed overlay checkbox - see ControlFrame.TelemetryEnable's doc. */

@@ -342,6 +342,20 @@ class ControllerDriveActivity : AppCompatActivity() {
                     if (modePrefs.telemetryEnabled.first()) {
                         controlLink.sendTelemetryEnable(true)
                     }
+
+                    // Confirmed on real hardware as a real bug: a fresh vehicle
+                    // always starts its own encoder at VideoQuality.HIGH
+                    // (VehicleActivity.videoSender.start()) regardless of what
+                    // this screen's quality buttons show - and setQuality()
+                    // below is a no-op whenever the requested preset already
+                    // equals currentQualityIndex, which it always does on a
+                    // brand-new connection (nothing changed it yet). Without
+                    // this, the UI could show Low tinted green while the
+                    // vehicle kept streaming at High until a button tap
+                    // actually changed currentQualityIndex to something else
+                    // and back. Send unconditionally so the vehicle always
+                    // actually matches what's shown, not just when it changes.
+                    controlLink.sendQuality(currentQualityIndex)
                 } catch (e: Exception) {
                     log("connect failed: ${e::class.simpleName}: ${e.message}")
                 }
@@ -472,7 +486,6 @@ class ControllerDriveActivity : AppCompatActivity() {
             audioReceiver.muted = !audioReceiver.muted
             applyMuteUi()
             if (audioReceiver.muted) micSender.stop() else startMic()
-            lifecycleScope.launch { modePrefs.setAudioMuted(audioReceiver.muted) }
         }
 
         // Restores Auto quality/Safe steering/Mute/GPS-speed overlay from last
@@ -496,7 +509,11 @@ class ControllerDriveActivity : AppCompatActivity() {
             telemetryEnabled = modePrefs.telemetryEnabled.first()
             checkTelemetry.isChecked = telemetryEnabled
 
-            audioReceiver.muted = modePrefs.audioMuted.first()
+            // Per direct request: audio is muted at the start of every single
+            // connection, always - never carried over from a previous session
+            // as a lasting "stay unmuted" default, only ever turned on by an
+            // explicit tap on this same screen, this same connection.
+            audioReceiver.muted = true
             applyMuteUi()
             if (!audioReceiver.muted) startMic() else micSender.stop()
         }
