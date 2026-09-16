@@ -288,7 +288,22 @@ class VideoSender(private val context: Context) {
                 camera.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
-                        session.setRepeatingRequest(builder.build(), null, cameraHandler)
+                        try {
+                            session.setRepeatingRequest(builder.build(), null, cameraHandler)
+                        } catch (e: Exception) {
+                            // Confirmed on real hardware as a real crash without this:
+                            // the camera HAL can reject setRepeatingRequest() outright
+                            // ("Function not implemented", CameraAccessException) even
+                            // after successfully configuring the session - seen right
+                            // after a previous camera session on this device had just
+                            // been torn down (a transient HAL hiccup, not a rejection
+                            // of this resolution the way onConfigureFailed() below
+                            // handles), and this ran on its own HandlerThread, so an
+                            // uncaught exception here took the whole app down. Report
+                            // and give up cleanly instead.
+                            onError?.invoke("camera setRepeatingRequest failed: ${e.message}")
+                            session.close()
+                        }
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {

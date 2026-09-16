@@ -206,7 +206,7 @@ class ControllerActivity : AppCompatActivity() {
                 dot.contentDescription = getString(
                     if (online) R.string.controller_vehicle_online else R.string.controller_vehicle_offline
                 )
-                delay(5_000L)
+                delay(3_000L)
             }
         }
     }
