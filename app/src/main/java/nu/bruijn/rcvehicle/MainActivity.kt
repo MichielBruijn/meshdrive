@@ -91,7 +91,10 @@ class MainActivity : AppCompatActivity() {
         // up front, every launch, that it's not the real thing and exactly
         // when it stops working.
         if (BuildConfig.EXPIRES_AT_MS != 0L) {
-            val dateStr = java.text.SimpleDateFormat("d MMMM yyyy", java.util.Locale.getDefault())
+            // Locale.US, not getDefault(): the banner text itself is English
+            // (like the rest of this app's strings) - a Dutch month name here
+            // on a Dutch-locale device read as a mismatched half-translation.
+            val dateStr = java.text.SimpleDateFormat("d MMMM yyyy", java.util.Locale.US)
                 .format(java.util.Date(BuildConfig.EXPIRES_AT_MS))
             findViewById<android.widget.TextView>(R.id.textDemoBanner).apply {
                 text = getString(R.string.main_demo_banner, dateStr)
