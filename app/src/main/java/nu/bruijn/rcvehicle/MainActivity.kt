@@ -133,6 +133,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun selectMode(mode: AppMode) {
+        if (nu.bruijn.rcvehicle.yggdrasil.VpnConflictDetector.isForeignVpnActive(this)) {
+            android.app.AlertDialog.Builder(this)
+                .setTitle(R.string.main_vpn_conflict_title)
+                .setMessage(R.string.main_vpn_conflict_message)
+                .setPositiveButton(R.string.main_vpn_conflict_continue) { _, _ -> proceedWithMode(mode) }
+                .setNegativeButton(R.string.main_vpn_conflict_cancel, null)
+                .show()
+            return
+        }
+        proceedWithMode(mode)
+    }
+
+    private fun proceedWithMode(mode: AppMode) {
         lifecycleScope.launch {
             modePrefs.setMode(mode)
             val consent = YggdrasilController.prepareIntent(this@MainActivity)

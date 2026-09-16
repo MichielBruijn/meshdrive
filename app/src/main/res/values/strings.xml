@@ -55,4 +55,8 @@
     <string name="main_update_downloading">Downloading v%1$s…</string>
     <string name="main_update_download_failed">Download failed</string>
     <string name="main_update_install_permission">Allow MeshDrive to install updates, then tap again</string>
+    <string name="main_vpn_conflict_title">Another VPN is active</string>
+    <string name="main_vpn_conflict_message">A VPN (e.g. WireGuard) is already connected on this phone. Android only allows one VPN at a time, so starting MeshDrive will disconnect it. Continue anyway?</string>
+    <string name="main_vpn_conflict_continue">Continue</string>
+    <string name="main_vpn_conflict_cancel">Cancel</string>
 </resources>
