@@ -652,13 +652,18 @@ class VehicleActivity : AppCompatActivity() {
             return
         }
         log("starting video to ${controllerAddress.hostAddress}")
-        // Starts at HIGH - VideoSender.openCamera()'s onConfigureFailed now falls back
-        // to the next lower preset automatically if the camera HAL rejects a
-        // resolution outright (confirmed on real hardware: the Fairphone 5's camera
-        // does exactly that for 960x720, "Set of requested inputs/outputs not
-        // supported by HAL" - not just lower quality, no video at all without this),
-        // so this is always "the highest that actually works", not a hardcoded guess.
-        videoSender.start(controllerAddress.hostAddress!!, VideoPacket.PORT, pairingSecret, VideoQuality.HIGH)
+        // Starts at LOW, matching the controller's own default (ControllerDriveActivity) -
+        // confirmed on real hardware as a real bug starting at HIGH: the controller's
+        // corrective "sync to whatever quality is actually shown" Quality message
+        // (sent right after connecting) can race against - or simply get lost
+        // relative to - the vehicle's very first video frames, meaning a session
+        // could visibly start (and briefly stay) at full HIGH bandwidth/battery cost
+        // despite the controller UI showing Low the whole time. Starting at LOW
+        // itself needs no such correction to arrive at all - the controller's Quality
+        // message only needs to do anything when someone actually picks something
+        // other than Low. VideoSender.openCamera()'s onConfigureFailed still falls
+        // back further if even this gets rejected outright by the camera HAL.
+        videoSender.start(controllerAddress.hostAddress!!, VideoPacket.PORT, pairingSecret, VideoQuality.LOW)
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
