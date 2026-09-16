@@ -280,7 +280,8 @@ class VideoSender(private val context: Context) {
         sensorOrientation = manager.getCameraCharacteristics(cameraId)
             .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
 
-        manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
+        try {
+            manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
                 cameraDevice = camera
                 val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
@@ -347,7 +348,15 @@ class VideoSender(private val context: Context) {
                 camera.close()
                 onError?.invoke("camera error: $error")
             }
-        }, cameraHandler)
+            }, cameraHandler)
+        } catch (e: Exception) {
+            // Same transient-HAL-hiccup class as the other two call sites in
+            // this function (see their docs) - openCamera() itself can also
+            // throw synchronously (CameraAccessException: camera disabled/
+            // already in use, or a SecurityException if permission was
+            // revoked mid-session).
+            onError?.invoke("openCamera failed: ${e.message}")
+        }
     }
 
     private fun sendFrame(data: ByteArray) {
