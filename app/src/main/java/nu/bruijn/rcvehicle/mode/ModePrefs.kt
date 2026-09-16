@@ -10,7 +10,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import nu.bruijn.rcvehicle.yggdrasil.YggdrasilBootstrapPeers
+import nu.bruijn.rcvehicle.yggdrasil.YggdrasilPeerListCache
 
 private val Context.dataStore by preferencesDataStore(name = "mode_prefs")
 
@@ -214,13 +214,25 @@ class ModePrefs(private val context: Context) {
 
     /**
      * The actual candidate pool for YggdrasilController.start(): the user's own
-     * [yggdrasilPeers] if they've set any, otherwise YggdrasilBootstrapPeers'
-     * community-peer snapshot - so a fresh install can still reach the mesh
-     * without the user needing to find/paste a peer first, while any custom
-     * (or a fleet's future private-relay) entry always fully overrides the
-     * bootstrap set rather than being merged with it.
+     * [yggdrasilPeers] if they've set any, otherwise Michiel's own node plus
+     * YggdrasilPeerListCache's community-peer pool (live-fetched monthly,
+     * falling back to YggdrasilBootstrapPeers' baked-in snapshot) - so a fresh
+     * install can still reach the mesh without the user needing to find/paste
+     * a peer first, while any custom (or a fleet's future private-relay)
+     * entry always fully overrides this whole pool rather than being merged
+     * with it - a deliberate, explicit choice shouldn't get diluted by peers
+     * the user didn't pick.
      */
     val yggdrasilPeerCandidates: Flow<List<String>> = yggdrasilPeers.map { custom ->
-        custom.ifEmpty { YggdrasilBootstrapPeers.CANDIDATES }
+        custom.ifEmpty {
+            (listOf(OWN_NODE) + YggdrasilPeerListCache.get(context)).distinct()
+        }
+    }
+
+    private companion object {
+        // Always in the auto-selected pool per direct request - a hostname
+        // (dual-stack A+AAAA), not an IP literal, so DNS/PeerLatencyProbe picks
+        // whichever family actually works rather than being pinned to one.
+        const val OWN_NODE = "tcp://ygg.bruijn.nu:65535"
     }
 }
