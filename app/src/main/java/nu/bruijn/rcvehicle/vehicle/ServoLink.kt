@@ -18,8 +18,8 @@ import kotlinx.coroutines.launch
  * differs between the two transports.
  */
 abstract class ServoLink(
-    private val steerChannel: Int,
-    private val throttleChannel: Int,
+    private var steerChannel: Int,
+    private var throttleChannel: Int,
     private val centerUs: Int,
     private val minUs: Int,
     private val maxUs: Int,
@@ -30,6 +30,16 @@ abstract class ServoLink(
     private var watchdogJob: Job? = null
 
     var onStateChange: ((String) -> Unit)? = null
+
+    /** Overrides the channel mapping after construction - used once
+     * UsbServoBridge has queried the board's own configured Joystick X/Y
+     * channels (see its checkJoystickChannels()), so this app drives whichever
+     * channels the user actually set up on the servo tester itself, per direct
+     * request, instead of a hardcoded assumed default. */
+    fun setChannels(steer: Int, throttle: Int) {
+        steerChannel = steer
+        throttleChannel = throttle
+    }
 
     /** Write one channel's raw microsecond value ("PosJ{channel}={us}") to the board. */
     protected abstract fun send(channel: Int, us: Int)

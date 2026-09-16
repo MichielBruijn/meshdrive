@@ -126,6 +126,15 @@ class UsbServoBridge(
             onStateChange?.invoke("USB serial connected")
             onConnected?.invoke(true)
             startWatchdog()
+            checkJoystickChannels { steer, throttle ->
+                if (steer != null && throttle != null) {
+                    setChannels(steer, throttle)
+                    onStateChange?.invoke("using board's channels: steer=CH${steer + 1} throttle=CH${throttle + 1}")
+                }
+                // null means an older firmware that doesn't know GETJOYCHANNELS,
+                // or no reply in time - the constructor defaults stay in effect,
+                // same as before this existed.
+            }
         } catch (e: Exception) {
             onStateChange?.invoke("USB open failed: ${e.message}")
             onConnected?.invoke(false)
@@ -235,6 +244,52 @@ class UsbServoBridge(
                 onResult(withTimeoutOrNull(3000) { result.await() })
             } catch (_: Exception) {
                 onResult(null)
+            } finally {
+                onLineReceived = previousHandler
+                stopReading()
+            }
+        }
+    }
+
+    /** Asks the board which channels its own Joystick X/Y are currently configured
+     * for - "GETJOYCHANNELS" -> "JOYCHANNELS=<steer>,<throttle>" - see
+     * ServoLink.setChannels()'s doc for why. Called automatically once per
+     * connect (openPort() above); the result being null just means an older
+     * firmware that doesn't recognize the command, or no reply within the
+     * timeout - callers should leave the existing channels in place either way,
+     * same as this class's own caller does. */
+    fun checkJoystickChannels(onResult: (steer: Int?, throttle: Int?) -> Unit) {
+        val p = port
+        if (p == null) {
+            onResult(null, null)
+            return
+        }
+        scope.launch {
+            val previousHandler = onLineReceived
+            val result = CompletableDeferred<Pair<Int, Int>?>()
+            onLineReceived = { line ->
+                if (line.startsWith("JOYCHANNELS=")) {
+                    val parts = line.removePrefix("JOYCHANNELS=").split(",")
+                    result.complete(
+                        if (parts.size == 2) {
+                            val steer = parts[0].toIntOrNull()
+                            val throttle = parts[1].toIntOrNull()
+                            if (steer != null && throttle != null) steer to throttle else null
+                        } else {
+                            null
+                        },
+                    )
+                } else {
+                    previousHandler?.invoke(line)
+                }
+            }
+            startReading()
+            try {
+                synchronized(writeLock) { p.write("GETJOYCHANNELS\n".toByteArray(), 200) }
+                val channels = withTimeoutOrNull(3000) { result.await() }
+                onResult(channels?.first, channels?.second)
+            } catch (_: Exception) {
+                onResult(null, null)
             } finally {
                 onLineReceived = previousHandler
                 stopReading()
