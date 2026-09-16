@@ -62,4 +62,8 @@
     <string name="main_copyright">© 2026 Michiel Bruijn. All rights reserved.</string>
     <string name="main_trial_expired">This evaluation build has expired.\n\nContact Michiel Bruijn to license MeshDrive.</string>
     <string name="main_demo_banner">⚠ DEMO VERSION — expires %1$s</string>
+    <string name="main_license_title">Evaluation License</string>
+    <string name="main_license_text">This is an evaluation copy of MeshDrive, provided for demonstration purposes only.\n\nCopyright (c) 2026 Michiel Bruijn. All rights reserved.\n\nThis application and its associated software are proprietary and confidential. No license, express or implied, to use, copy, modify, distribute, sublicense, or sell copies of this application is granted except by separate written agreement with the copyright holder.\n\nUnauthorized copying, distribution, reverse engineering, or continued use of this application beyond evaluation purposes is strictly prohibited.\n\nBy tapping \"I Agree\", you acknowledge and accept these terms.</string>
+    <string name="main_license_agree">I Agree</string>
+    <string name="main_license_decline">Decline</string>
 </resources>

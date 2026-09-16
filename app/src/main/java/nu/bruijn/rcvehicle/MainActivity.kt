@@ -100,6 +100,20 @@ class MainActivity : AppCompatActivity() {
                 text = getString(R.string.main_demo_banner, dateStr)
                 visibility = View.VISIBLE
             }
+
+            // Per direct request: the license text lives in the app itself
+            // (a private GitHub repo's LICENSE file isn't visible to whoever's
+            // evaluating a demo build) and must be re-accepted on every single
+            // launch, not just once - no persisted "already agreed" state.
+            // Non-cancelable (no dismiss via back/outside-tap): Decline is the
+            // only way out of it besides Agree, and closes the app outright.
+            android.app.AlertDialog.Builder(this)
+                .setTitle(R.string.main_license_title)
+                .setMessage(R.string.main_license_text)
+                .setCancelable(false)
+                .setPositiveButton(R.string.main_license_agree, null)
+                .setNegativeButton(R.string.main_license_decline) { _, _ -> finish() }
+                .show()
         }
 
         findViewById<android.widget.Button>(R.id.buttonController).setOnClickListener {
