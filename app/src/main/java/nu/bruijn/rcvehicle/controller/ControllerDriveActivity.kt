@@ -124,7 +124,10 @@ class ControllerDriveActivity : AppCompatActivity() {
     // at (VideoQuality's ordinal); autoQuality toggles the FPS-driven step-down/
     // step-up loop in videoReceiver.onFps below. Manual button taps turn autoQuality
     // off, so a deliberate low-bandwidth choice never gets silently overridden.
-    private var currentQualityIndex = VideoQuality.HIGH.ordinal
+    // LOW/false is the actual default (ModePrefs.autoQualityEnabled) for a fresh
+    // install or a vehicle with no saved preference yet, not just this in-memory
+    // starting point - see its doc.
+    private var currentQualityIndex = VideoQuality.LOW.ordinal
     private var autoQuality = false
     private var lowFpsStreak = 0
     private var healthyFpsStreak = 0
@@ -393,23 +396,46 @@ class ControllerDriveActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
 
-        val checkAutoQuality = findViewById<CheckBox>(R.id.checkAutoQuality)
-        checkAutoQuality.setOnCheckedChangeListener { _, checked ->
-            autoQuality = checked
-            lifecycleScope.launch { modePrefs.setAutoQualityEnabled(checked) }
+        // Four equal buttons, exactly one tinted green at a time - Low/Med/High
+        // pick a fixed preset and turn Auto off; Auto hands quality back to the
+        // FPS-driven step loop (videoReceiver.onFps above). Replaces an earlier
+        // three-buttons-plus-checkbox layout per direct request: same four
+        // mutually exclusive choices, but every affordance now looks and behaves
+        // the same way.
+        val buttonQualityLow = findViewById<Button>(R.id.buttonQualityLow)
+        val buttonQualityMedium = findViewById<Button>(R.id.buttonQualityMedium)
+        val buttonQualityHigh = findViewById<Button>(R.id.buttonQualityHigh)
+        val buttonQualityAuto = findViewById<Button>(R.id.buttonQualityAuto)
+        val defaultQualityTint = buttonQualityLow.backgroundTintList
+        val qualityButtons = listOf(
+            VideoQuality.LOW.ordinal to buttonQualityLow,
+            VideoQuality.MEDIUM.ordinal to buttonQualityMedium,
+            VideoQuality.HIGH.ordinal to buttonQualityHigh,
+        )
+
+        fun updateQualityButtonTints() {
+            qualityButtons.forEach { (index, button) ->
+                button.backgroundTintList = if (!autoQuality && index == currentQualityIndex) activeTint else defaultQualityTint
+            }
+            buttonQualityAuto.backgroundTintList = if (autoQuality) activeTint else defaultQualityTint
         }
-        findViewById<Button>(R.id.buttonQualityLow).setOnClickListener {
-            checkAutoQuality.isChecked = false
-            setQuality(VideoQuality.LOW.ordinal)
+
+        qualityButtons.forEach { (index, button) ->
+            button.setOnClickListener {
+                autoQuality = false
+                setQuality(index)
+                updateQualityButtonTints()
+                lifecycleScope.launch { modePrefs.setAutoQualityEnabled(false) }
+            }
         }
-        findViewById<Button>(R.id.buttonQualityMedium).setOnClickListener {
-            checkAutoQuality.isChecked = false
-            setQuality(VideoQuality.MEDIUM.ordinal)
+        buttonQualityAuto.setOnClickListener {
+            autoQuality = true
+            updateQualityButtonTints()
+            lifecycleScope.launch { modePrefs.setAutoQualityEnabled(true) }
         }
-        findViewById<Button>(R.id.buttonQualityHigh).setOnClickListener {
-            checkAutoQuality.isChecked = false
-            setQuality(VideoQuality.HIGH.ordinal)
-        }
+        // So LOW is visibly tinted right away rather than only once the restore
+        // coroutine below finishes its first async read.
+        updateQualityButtonTints()
 
         val checkTelemetry = findViewById<CheckBox>(R.id.checkTelemetry)
         checkTelemetry.setOnCheckedChangeListener { _, checked ->
@@ -459,7 +485,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         // don't need the vehicle to know anything.
         lifecycleScope.launch {
             autoQuality = modePrefs.autoQualityEnabled.first()
-            checkAutoQuality.isChecked = autoQuality
+            updateQualityButtonTints()
 
             steerLimitEnabled = modePrefs.safeSteeringEnabled.first()
             buttonSteerLimit.backgroundTintList = if (steerLimitEnabled) activeTint else defaultSteerLimitTint

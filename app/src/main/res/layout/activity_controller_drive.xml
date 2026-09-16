@@ -135,10 +135,11 @@
             android:max="100" />
     </LinearLayout>
 
-    <!-- Video quality: manual Low/Med/High picks, or Auto to let the app step down/up
-         from decoded FPS - see ControllerDriveActivity's auto-quality loop. Manual
-         buttons turn Auto off. Debug-only: starts at HIGH and rarely needs touching
-         day to day, this is for deliberately trading quality for bandwidth. -->
+    <!-- Video quality: four equal, mutually exclusive buttons (Low/Med/High pick a
+         fixed preset and turn Auto off; Auto lets the app step down/up from decoded
+         FPS instead - see ControllerDriveActivity's auto-quality loop). The active
+         one is tinted green - see updateQualityButtonTints(). Defaults to Low for a
+         fresh install or a vehicle with no saved preference (ModePrefs.autoQualityEnabled). -->
     <LinearLayout
         android:id="@+id/qualitySection"
         android:layout_width="wrap_content"
@@ -170,12 +171,11 @@
             android:layout_height="wrap_content"
             android:text="@string/controller_quality_high" />
 
-        <CheckBox
-            android:id="@+id/checkAutoQuality"
+        <Button
+            android:id="@+id/buttonQualityAuto"
+            style="?android:attr/buttonStyleSmall"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:textColor="@android:color/white"
             android:text="@string/controller_quality_auto" />
 
         <!-- Tells the vehicle to start/stop GPS (ControlFrame.TelemetryEnable) and

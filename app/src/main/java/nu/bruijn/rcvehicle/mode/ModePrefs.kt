@@ -170,7 +170,11 @@ class ModePrefs(private val context: Context) {
      * ControllerDriveActivity re-sends the underlying ControlFrame messages once
      * connected, since a fresh vehicle doesn't otherwise know these were on.
      */
-    val autoQualityEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUTO_QUALITY] ?: true }
+    // Per direct request: LOW, not Auto, is the actual default for a fresh
+    // install or a vehicle with no saved preference yet - a deliberate,
+    // predictable starting bandwidth rather than "whatever Auto happens to
+    // pick" the first time a video link is established.
+    val autoQualityEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUTO_QUALITY] ?: false }
     suspend fun setAutoQualityEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.AUTO_QUALITY] = enabled }
     }
