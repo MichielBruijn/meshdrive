@@ -285,7 +285,8 @@ class VideoSender(private val context: Context) {
                 cameraDevice = camera
                 val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
                 builder.addTarget(surface)
-                camera.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
+                try {
+                    camera.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
                         try {
@@ -326,6 +327,16 @@ class VideoSender(private val context: Context) {
                         }
                     }
                 }, cameraHandler)
+                } catch (e: Exception) {
+                    // Confirmed on real hardware as a real crash without this:
+                    // createCaptureSession() itself can throw synchronously
+                    // ("Error configuring streams: Broken pipe",
+                    // CameraAccessException), not just fail asynchronously via
+                    // onConfigureFailed() above - same transient-HAL-hiccup
+                    // class of problem as setRepeatingRequest()'s doc above,
+                    // just a different call site. Report and give up cleanly.
+                    onError?.invoke("createCaptureSession failed: ${e.message}")
+                }
             }
 
             override fun onDisconnected(camera: CameraDevice) {
