@@ -118,6 +118,12 @@ class ControlLink {
     @Volatile private var lastSenderAddress: InetAddress? = null
     @Volatile private var lastSenderPort: Int = -1
 
+    // Vehicle side: exactly one controller "owns" this vehicle at a time - see
+    // listen()'s doc for why and how this is enforced.
+    @Volatile private var activeControllerAddress: InetAddress? = null
+    @Volatile private var lastAcceptedAtMs = 0L
+    @Volatile private var lastBusyReplyAtMs = 0L
+
     /** Vehicle side: send the current GPS fix to whichever controller last talked to
      * this socket. No-op before that's known (listen() hasn't received anything yet). */
     fun sendTelemetry(hasFix: Boolean, speedKmh: Float, lat: Double, lon: Double) {
@@ -139,7 +145,12 @@ class ControlLink {
      * for the FPS/latency debug overlay. Must be called after connect(). The vehicle
      * side needs no matching call: listen() below replies to any Ping automatically.
      */
-    fun startPing(intervalMs: Long = 1000, onRtt: (Long) -> Unit, onTelemetry: ((ControlFrame.Decoded.Telemetry) -> Unit)? = null) {
+    fun startPing(
+        intervalMs: Long = 1000,
+        onRtt: (Long) -> Unit,
+        onTelemetry: ((ControlFrame.Decoded.Telemetry) -> Unit)? = null,
+        onBusy: (() -> Unit)? = null,
+    ) {
         val sock = socket ?: return
         pingJob = scope.launch {
             while (isActive) {
@@ -157,6 +168,7 @@ class ControlLink {
                     when (val decoded = ControlFrame.decode(verified, verified.size)) {
                         is ControlFrame.Decoded.Pong -> onRtt(SystemClock.elapsedRealtime() - decoded.sentAtMs)
                         is ControlFrame.Decoded.Telemetry -> onTelemetry?.invoke(decoded)
+                        is ControlFrame.Decoded.Busy -> onBusy?.invoke()
                         else -> {}
                     }
                 } catch (_: Exception) {
@@ -186,6 +198,19 @@ class ControlLink {
      * [secret] is this vehicle's own PairingSecret - anything that doesn't carry
      * a valid tag for it is silently dropped before ever reaching ControlFrame.decode(),
      * same as a packet that never arrived (see SignedFrame's doc).
+     *
+     * Exactly one controller "owns" this vehicle at a time - a second phone with
+     * the same QR/secret connecting while the first is still active used to get
+     * its commands silently interleaved with the first's, since both signed
+     * identically and nothing here distinguished them: confirmed on real
+     * hardware as visibly jittery/conflicting servo movement, not a clean
+     * hand-off. The first sender to speak becomes the owner; anyone else gets
+     * rejected (a Busy reply, throttled - see [BUSY_REPLY_INTERVAL_MS] - not a
+     * silent drop, so their app can tell the user why) until the owner goes
+     * quiet for [OWNERSHIP_TIMEOUT_MS], at which point the next sender takes
+     * over. Ping stays exempt (handled below, before this check) since
+     * ControllerActivity's recent-vehicles online-dot probes every listed
+     * vehicle regardless of who's currently driving it.
      */
     fun listen(port: Int, secret: ByteArray, onReceived: (ControlFrame.Decoded, InetAddress) -> Unit) {
         this.secret = secret
@@ -210,8 +235,22 @@ class ControlLink {
                             sock.send(DatagramPacket(pong, pong.size, packet.address, packet.port))
                         } catch (_: Exception) {
                         }
-                    } else {
+                        continue
+                    }
+                    val now = System.currentTimeMillis()
+                    val owner = activeControllerAddress
+                    val ownerTimedOut = now - lastAcceptedAtMs > OWNERSHIP_TIMEOUT_MS
+                    if (owner == null || ownerTimedOut || owner == packet.address) {
+                        activeControllerAddress = packet.address
+                        lastAcceptedAtMs = now
                         onReceived(decoded, packet.address)
+                    } else if (now - lastBusyReplyAtMs > BUSY_REPLY_INTERVAL_MS) {
+                        lastBusyReplyAtMs = now
+                        val busy = SignedFrame.sign(ControlFrame.encodeBusy(), secret)
+                        try {
+                            sock.send(DatagramPacket(busy, busy.size, packet.address, packet.port))
+                        } catch (_: Exception) {
+                        }
                     }
                 } catch (_: Exception) {
                     if (!isActive) break
@@ -229,6 +268,16 @@ class ControlLink {
 
     companion object {
         const val PORT = 7861
+
+        // Matches ControllerDriveActivity's own "Vehicle connection lost" threshold -
+        // an owning controller silent for longer than this is presumed gone, not
+        // just between ticks, so the next sender can take over.
+        private const val OWNERSHIP_TIMEOUT_MS = 2_000L
+
+        // A rejected second controller's tick loop sends at ~33Hz - without this,
+        // every one of those would get its own Busy reply, flooding both the link
+        // and that controller's UI update with the same message.
+        private const val BUSY_REPLY_INTERVAL_MS = 2_000L
 
         /**
          * "Is this vehicle reachable right now" check for ControllerActivity's

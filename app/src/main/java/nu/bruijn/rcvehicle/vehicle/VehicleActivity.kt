@@ -455,6 +455,9 @@ class VehicleActivity : AppCompatActivity() {
                             is ControlFrame.Decoded.Ping, is ControlFrame.Decoded.Pong -> {
                                 // Handled transparently inside ControlLink.listen() - never reaches here.
                             }
+                            is ControlFrame.Decoded.Busy -> {
+                                // Vehicle -> controller only, never sent to the vehicle.
+                            }
                         }
                     }
                     log("listening for UDP control on port ${ControlLink.PORT}")

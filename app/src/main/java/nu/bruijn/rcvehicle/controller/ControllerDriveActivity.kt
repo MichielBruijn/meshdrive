@@ -120,6 +120,14 @@ class ControllerDriveActivity : AppCompatActivity() {
     private var lastPongAtMs = 0L
     private var connectStartedAtMs = 0L
 
+    // Set whenever the vehicle rejects a Control frame because another
+    // controller already owns it (ControlLink.listen()'s ownership lock) -
+    // self-expiring in the tick loop's warning check below rather than a
+    // manually-cleared flag, same reasoning as lastPongAtMs: a Busy reply
+    // that stops arriving (the other controller went away, or this one got
+    // accepted) should stop being shown without any extra bookkeeping.
+    private var lastBusyAtMs = 0L
+
     // Video quality: currentQualityIndex is what the vehicle is actually encoding
     // at (VideoQuality's ordinal); autoQuality toggles the FPS-driven step-down/
     // step-up loop in videoReceiver.onFps below. Manual button taps turn autoQuality
@@ -326,6 +334,9 @@ class ControllerDriveActivity : AppCompatActivity() {
                                 updateTelemetryOverlay()
                                 if (isRecording) gpxTrack?.addPoint(telemetry)
                             }
+                        },
+                        onBusy = {
+                            runOnUiThread { lastBusyAtMs = System.currentTimeMillis() }
                         },
                     )
 
@@ -541,6 +552,11 @@ class ControllerDriveActivity : AppCompatActivity() {
                 if (!address.isNullOrEmpty()) {
                     val now = System.currentTimeMillis()
                     val warning = when {
+                        // Checked first - a stale-but-still-arriving Busy reply means
+                        // there IS a live link to the vehicle, just not one this
+                        // controller is allowed to drive on, which is a more useful
+                        // thing to tell the user than "no connection".
+                        now - lastBusyAtMs < 3000 -> "⚠ Vehicle already connected to another controller"
                         lastPongAtMs == 0L && now - connectStartedAtMs > 5000 -> "⚠ No connection to vehicle"
                         lastPongAtMs != 0L && now - lastPongAtMs > 2000 -> "⚠ Vehicle connection lost (${(now - lastPongAtMs) / 1000}s)"
                         else -> null

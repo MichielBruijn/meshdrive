@@ -20,6 +20,7 @@ object ControlFrame {
     private const val TYPE_TELEMETRY_ENABLE: Byte = 0x07
     private const val TYPE_TELEMETRY: Byte = 0x08
     private const val TYPE_STEER_LIMIT_CONFIG: Byte = 0x09
+    private const val TYPE_BUSY: Byte = 0x0A
     private const val CONTROL_SIZE = 9
     private const val TIMESTAMP_SIZE = 9 // type + long
     private const val TELEMETRY_SIZE = 1 + 1 + 4 + 8 + 8 // type, hasFix, speed float, lat/lon doubles
@@ -76,6 +77,11 @@ object ControlFrame {
         return bb.array()
     }
 
+    /** Vehicle -> controller: sent instead of acting on a Control frame from
+     * anyone other than whoever's currently driving - see ControlLink.listen()'s
+     * ownership-lock doc for why. */
+    fun encodeBusy(): ByteArray = byteArrayOf(TYPE_BUSY)
+
     private fun encodeTimestamp(type: Byte, value: Long): ByteArray {
         val bb = ByteBuffer.allocate(TIMESTAMP_SIZE).order(ByteOrder.LITTLE_ENDIAN)
         bb.put(type)
@@ -93,6 +99,7 @@ object ControlFrame {
         data class TelemetryEnable(val enabled: Boolean) : Decoded()
         data class Telemetry(val hasFix: Boolean, val speedKmh: Float, val lat: Double, val lon: Double) : Decoded()
         data class SteerLimitConfig(val maxSpeedKmh: Float, val reductionFraction: Float) : Decoded()
+        data object Busy : Decoded()
     }
 
     fun decode(bytes: ByteArray, length: Int): Decoded? {
@@ -148,6 +155,10 @@ object ControlFrame {
                 val maxSpeedKmh = bb.float
                 val reductionFraction = bb.float
                 Decoded.SteerLimitConfig(maxSpeedKmh, reductionFraction)
+            }
+            TYPE_BUSY -> {
+                if (length != 1) return null
+                Decoded.Busy
             }
             else -> null
         }
