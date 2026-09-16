@@ -142,6 +142,15 @@ class UsbServoBridge(
                 // null means an older firmware that doesn't know GETJOYCHANNELS,
                 // or no reply in time - the constructor defaults stay in effect,
                 // same as before this existed.
+                checkCalibration { calibration ->
+                    if (calibration != null) {
+                        val (steerMin, steerCenter, steerMax, throttleMin, throttleCenter, throttleMax) = calibration
+                        setCalibration(steerMin, steerCenter, steerMax, throttleMin, throttleCenter, throttleMax)
+                        onStateChange?.invoke("using board's calibration: steer=$steerMin/$steerCenter/$steerMax throttle=$throttleMin/$throttleCenter/$throttleMax")
+                    }
+                    // null means an older firmware that doesn't know GETCALIBRATION,
+                    // or no reply in time - the generic 1000/1500/2000 default stays.
+                }
             }
         } catch (e: Exception) {
             onStateChange?.invoke("USB open failed: ${e.message}")
@@ -298,6 +307,53 @@ class UsbServoBridge(
                 onResult(channels?.first, channels?.second)
             } catch (_: Exception) {
                 onResult(null, null)
+            } finally {
+                onLineReceived = previousHandler
+                stopReading()
+            }
+        }
+    }
+
+    /** Steer/throttle µs calibration as reported by GETCALIBRATION - see checkCalibration(). */
+    data class Calibration(
+        val steerMin: Int,
+        val steerCenter: Int,
+        val steerMax: Int,
+        val throttleMin: Int,
+        val throttleCenter: Int,
+        val throttleMax: Int,
+    )
+
+    /** Asks the board for its own calibrated Min/Center/Max µs per steer/throttle
+     * channel - "GETCALIBRATION" -> "CALIBRATION=<steerMin>,<steerCenter>,<steerMax>,
+     * <throttleMin>,<throttleCenter>,<throttleMax>" - see ServoLink.setCalibration()'s
+     * doc for why. Called automatically right after checkJoystickChannels() in
+     * openPort(); null just means an older firmware that doesn't recognize the
+     * command, or no reply within the timeout - callers should leave the existing
+     * (generic RC default) calibration in place either way. */
+    fun checkCalibration(onResult: (Calibration?) -> Unit) {
+        val p = port
+        if (p == null) {
+            onResult(null)
+            return
+        }
+        scope.launch {
+            val previousHandler = onLineReceived
+            val result = CompletableDeferred<Calibration?>()
+            onLineReceived = { line ->
+                if (line.startsWith("CALIBRATION=")) {
+                    val parts = line.removePrefix("CALIBRATION=").split(",").mapNotNull { it.toIntOrNull() }
+                    result.complete(if (parts.size == 6) Calibration(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]) else null)
+                } else {
+                    previousHandler?.invoke(line)
+                }
+            }
+            startReading()
+            try {
+                synchronized(writeLock) { p.write("GETCALIBRATION\n".toByteArray(), 200) }
+                onResult(withTimeoutOrNull(3000) { result.await() })
+            } catch (_: Exception) {
+                onResult(null)
             } finally {
                 onLineReceived = previousHandler
                 stopReading()

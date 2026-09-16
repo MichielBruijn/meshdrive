@@ -20,14 +20,25 @@ import kotlinx.coroutines.launch
 abstract class ServoLink(
     private var steerChannel: Int,
     private var throttleChannel: Int,
-    private val centerUs: Int,
-    private val minUs: Int,
-    private val maxUs: Int,
+    centerUs: Int,
+    minUs: Int,
+    maxUs: Int,
     private val failsafeTimeoutMs: Long,
 ) {
     protected val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var lastControlAtMs = 0L
     private var watchdogJob: Job? = null
+
+    // Both channels start out sharing the constructor's generic RC default
+    // (same as before per-channel calibration existed) - setCalibration()
+    // below can then split them apart once the board's own real per-channel
+    // values are known.
+    private var steerMinUs = minUs
+    private var steerCenterUs = centerUs
+    private var steerMaxUs = maxUs
+    private var throttleMinUs = minUs
+    private var throttleCenterUs = centerUs
+    private var throttleMaxUs = maxUs
 
     var onStateChange: ((String) -> Unit)? = null
 
@@ -39,6 +50,26 @@ abstract class ServoLink(
     fun setChannels(steer: Int, throttle: Int) {
         steerChannel = steer
         throttleChannel = throttle
+    }
+
+    /**
+     * Overrides the µs range per channel after construction - used once
+     * UsbServoBridge has queried the board's own calibrated Min/Center/Max
+     * for the steer/throttle channels (checkCalibration()). Confirmed on real
+     * hardware as a real bug without this: the generic 1000/1500/2000 RC
+     * default doesn't match a board calibrated to something else (e.g.
+     * 700/1250/1801) - the firmware's own applySteerOutput()/
+     * applyThrottleOutput() constrain() to ITS real range regardless, so a
+     * mismatched app-side assumption just silently lost whichever end of the
+     * range sat outside its hardcoded guess.
+     */
+    fun setCalibration(steerMin: Int, steerCenter: Int, steerMax: Int, throttleMin: Int, throttleCenter: Int, throttleMax: Int) {
+        steerMinUs = steerMin
+        steerCenterUs = steerCenter
+        steerMaxUs = steerMax
+        throttleMinUs = throttleMin
+        throttleCenterUs = throttleCenter
+        throttleMaxUs = throttleMax
     }
 
     /** Write one channel's raw microsecond value ("PosJ{channel}={us}") to the board. */
@@ -56,11 +87,11 @@ abstract class ServoLink(
     /** steer/throttle normalized to -1.0..1.0. */
     fun sendControl(steer: Float, throttle: Float) {
         lastControlAtMs = System.currentTimeMillis()
-        send(steerChannel, toUs(steer))
-        send(throttleChannel, toUs(throttle))
+        send(steerChannel, toUs(steer, steerCenterUs, steerMinUs, steerMaxUs))
+        send(throttleChannel, toUs(throttle, throttleCenterUs, throttleMinUs, throttleMaxUs))
     }
 
-    private fun toUs(value: Float): Int {
+    private fun toUs(value: Float, centerUs: Int, minUs: Int, maxUs: Int): Int {
         val clamped = value.coerceIn(-1f, 1f)
         return if (clamped >= 0) {
             (centerUs + clamped * (maxUs - centerUs)).toInt()
@@ -70,8 +101,8 @@ abstract class ServoLink(
     }
 
     protected fun sendNeutral() {
-        send(steerChannel, centerUs)
-        send(throttleChannel, centerUs)
+        send(steerChannel, steerCenterUs)
+        send(throttleChannel, throttleCenterUs)
     }
 
     // App-side failsafe, independent of the firmware's own >500ms one (v1.15): a
