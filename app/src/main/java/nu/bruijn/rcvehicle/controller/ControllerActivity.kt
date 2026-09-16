@@ -17,7 +17,10 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.control.ControlLink
@@ -34,6 +37,11 @@ import nu.bruijn.rcvehicle.mode.ModePrefs
 class ControllerActivity : AppCompatActivity() {
 
     private lateinit var modePrefs: ModePrefs
+
+    // One probe loop per visible row, cancelled and replaced on every
+    // refreshRecentVehicles() (onResume) - otherwise stale loops from a
+    // previous resume would keep running against detached views forever.
+    private val probeJobs = mutableListOf<Job>()
 
     // Scanning connects immediately - no separate "Connect" tap needed, that's only
     // still required for the debug-mode manual-address path below.
@@ -103,6 +111,8 @@ class ControllerActivity : AppCompatActivity() {
     private fun refreshRecentVehicles() {
         val title = findViewById<TextView>(R.id.textRecentVehiclesTitle)
         val container = findViewById<LinearLayout>(R.id.recentVehiclesList)
+        probeJobs.forEach { it.cancel() }
+        probeJobs.clear()
         container.removeAllViews()
         lifecycleScope.launch {
             val addresses = modePrefs.recentVehicleAddresses.first()
@@ -173,17 +183,31 @@ class ControllerActivity : AppCompatActivity() {
         }
         container.addView(row)
 
-        lifecycleScope.launch {
+        // A single one-shot probe right as this screen opens can lose the race
+        // against Yggdrasil still settling on a path to the vehicle (freshly
+        // started mesh, cold DHT lookup, etc.) - confirmed on real hardware as
+        // a false "offline" reading that a moment later, once actually
+        // connecting, turns out to be fine. Keep re-probing on a steady cadence
+        // instead of trusting one snapshot, so the dot self-corrects.
+        probeJobs += lifecycleScope.launch {
             // No stored secret means this address was never actually paired via
             // QR (or predates authentication) - can't probe it at all now, same
             // as it being offline, since an unsigned Ping is simply dropped by
             // the vehicle rather than answered.
             val secret = modePrefs.secretForVehicle(address)
-            val online = secret != null && ControlLink.probeOnline(address, secret)
-            dot.setTextColor(if (online) Color.parseColor("#4CAF50") else Color.parseColor("#9E9E9E"))
-            dot.contentDescription = getString(
-                if (online) R.string.controller_vehicle_online else R.string.controller_vehicle_offline
-            )
+            if (secret == null) {
+                dot.setTextColor(Color.parseColor("#9E9E9E"))
+                dot.contentDescription = getString(R.string.controller_vehicle_offline)
+                return@launch
+            }
+            while (isActive) {
+                val online = ControlLink.probeOnline(address, secret)
+                dot.setTextColor(if (online) Color.parseColor("#4CAF50") else Color.parseColor("#9E9E9E"))
+                dot.contentDescription = getString(
+                    if (online) R.string.controller_vehicle_online else R.string.controller_vehicle_offline
+                )
+                delay(5_000L)
+            }
         }
     }
 
