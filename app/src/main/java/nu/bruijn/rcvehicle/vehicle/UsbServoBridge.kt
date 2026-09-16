@@ -104,8 +104,16 @@ class UsbServoBridge(
         permissionReceiver = receiver
         context.registerReceiver(receiver, IntentFilter(action), Context.RECEIVER_NOT_EXPORTED)
 
+        // .setPackage() makes this Intent explicit rather than a bare action
+        // string - confirmed on real hardware as a crash without it: Android 14+
+        // (targetSdk 34+) throws IllegalArgumentException for a FLAG_MUTABLE
+        // PendingIntent wrapping an implicit Intent, and it has to stay mutable
+        // since UsbManager.requestPermission() fills in EXTRA_PERMISSION_GRANTED/
+        // EXTRA_DEVICE on it before firing - FLAG_IMMUTABLE would silently drop
+        // those. Doesn't change matching: the receiver above is already scoped
+        // to this app only (RECEIVER_NOT_EXPORTED).
         val permissionIntent = PendingIntent.getBroadcast(
-            context, 0, Intent(action), PendingIntent.FLAG_MUTABLE
+            context, 0, Intent(action).setPackage(context.packageName), PendingIntent.FLAG_MUTABLE
         )
         onStateChange?.invoke("requesting USB permission…")
         manager.requestPermission(driver.device, permissionIntent)
