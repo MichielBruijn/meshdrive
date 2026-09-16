@@ -168,9 +168,25 @@ class YggdrasilVpnService : VpnService() {
     }
 
     override fun onRevoke() {
-        // The user pulled VPN consent from system Settings - Android calls this
-        // instead of onDestroy() in that case, but we still need the same teardown.
-        stop()
+        // Android calls this either when the user pulls VPN consent via system
+        // Settings, or - confirmed on real hardware as the actual scenario -
+        // when a DIFFERENT app establishes its own VPN, forcibly reclaiming
+        // the single OS-level VPN slot (seen with Microsoft Defender's Web
+        // Protection periodically doing exactly this). The previous behavior
+        // here was a full stop(): kills the whole service, foreground
+        // notification included, leaving MeshDrive dead until the user
+        // noticed and manually reopened the app. Reuse the same
+        // "session died, keep the service alive and let PeerMonitor retry"
+        // handling as a pump thread dying unexpectedly (onPumpThreadExited())
+        // instead - self-healing once the other app's VPN goes away again
+        // (calling establish() again simply reclaims the slot back, the same
+        // way this app took it from something else in the first place), no
+        // full restart or user action needed. A user-initiated revoke via
+        // Settings looks identical from here and gets the same retry loop -
+        // acceptable, since it'll just keep quietly failing to reclaim the
+        // slot until they grant consent again, rather than needing special-
+        // casing to tell the two apart.
+        handleMeshSessionDied()
         super.onRevoke()
     }
 
@@ -512,8 +528,19 @@ class YggdrasilVpnService : VpnService() {
      */
     private fun onPumpThreadExited() {
         if (!meshUp.get()) return
-        Log.i(TAG, "mesh session died unexpectedly, forcing reconnect")
-        disconnectMesh()
+        handleMeshSessionDied()
+    }
+
+    /** Tears the current session down (if still up) and wakes PeerMonitor to
+     * retry immediately rather than waiting out its current sleep - shared by
+     * both ways a live session can die from under this service: the tun pump
+     * threads hitting an IOException ([onPumpThreadExited]) and Android
+     * revoking the VPN grant because another app took the OS's single VPN
+     * slot ([onRevoke]). Deliberately does NOT stop the outer service/
+     * notification/monitor thread - this is meant to self-heal, not give up. */
+    private fun handleMeshSessionDied() {
+        Log.i(TAG, "mesh session died, forcing reconnect")
+        if (meshUp.get()) disconnectMesh()
         forceReconnect.set(true)
         monitorThread?.interrupt()
     }
