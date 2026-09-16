@@ -175,6 +175,7 @@
             android:id="@+id/seekSteer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:thumb="@drawable/seek_thumb"
             android:max="200"
             android:progress="100" />
 
@@ -187,6 +188,7 @@
             android:id="@+id/seekThrottle"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:thumb="@drawable/seek_thumb"
             android:max="200"
             android:progress="100" />
 
