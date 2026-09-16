@@ -283,9 +283,14 @@ class VehicleActivity : AppCompatActivity() {
         val textOwnAddress = findViewById<TextView>(R.id.textOwnYggdrasilAddress)
         val logView = findViewById<TextView>(R.id.textRtcLog)
 
+        // Capped to the last N lines - an unbounded log view (wrap_content, no
+        // scroll) pushed the rest of this screen off-screen within seconds at
+        // the sliders/control-frame log's own rate, confirmed on real hardware.
+        val maxLogLines = 20
         fun log(line: String) = runOnUiThread {
             Log.d("RCDebug", line)
-            logView.append(line + "\n")
+            val lines = (logView.text.toString() + line + "\n").lines()
+            logView.text = lines.takeLast(maxLogLines + 1).joinToString("\n")
         }
 
         val neededPermissions = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION)
@@ -400,7 +405,11 @@ class VehicleActivity : AppCompatActivity() {
                     controlLink.listen(ControlLink.PORT, pairingSecret) { decoded, senderAddress ->
                         when (decoded) {
                             is ControlFrame.Decoded.Control -> {
-                                log("control #${decoded.seq}: steer=${decoded.steer} throttle=${decoded.throttle}")
+                                // Deliberately NOT logged per-frame (confirmed on real
+                                // hardware as a real bug: at the controller's 20-33Hz
+                                // tick rate this filled the log view within seconds,
+                                // pushing everything below it off-screen) - the sliders
+                                // just below already give live steer/throttle feedback.
                                 lastRemoteControlAtMs = System.currentTimeMillis()
                                 val steer = if (speedLimitEnabled) applySpeedSteerLimit(decoded.steer, currentSpeedKmh) else decoded.steer
                                 service?.activeLink?.sendControl(steer, decoded.throttle)
