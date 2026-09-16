@@ -86,6 +86,19 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         modePrefs = ModePrefs(applicationContext)
 
+        // "demo" flavor only - see the expiry check above for why this can't
+        // be a subtle footnote: whoever's evaluating this build needs to know
+        // up front, every launch, that it's not the real thing and exactly
+        // when it stops working.
+        if (BuildConfig.EXPIRES_AT_MS != 0L) {
+            val dateStr = java.text.SimpleDateFormat("d MMMM yyyy", java.util.Locale.getDefault())
+                .format(java.util.Date(BuildConfig.EXPIRES_AT_MS))
+            findViewById<android.widget.TextView>(R.id.textDemoBanner).apply {
+                text = getString(R.string.main_demo_banner, dateStr)
+                visibility = View.VISIBLE
+            }
+        }
+
         findViewById<android.widget.Button>(R.id.buttonController).setOnClickListener {
             selectMode(AppMode.CONTROLLER)
         }
