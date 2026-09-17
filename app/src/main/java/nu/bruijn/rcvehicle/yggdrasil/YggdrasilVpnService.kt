@@ -72,6 +72,14 @@ class YggdrasilVpnService : VpnService() {
         private const val RETRY_INTERVAL_MS = 5_000L
         private const val STEADY_INTERVAL_MS = 60_000L
 
+        // ~15-20s of every single candidate being unreachable, every round -
+        // see evaluate()'s doc for what this triggers (dropping a possibly-
+        // degraded live-fetched peer cache). Long enough that a routine
+        // measurement blip or a few-second network hiccup can't trip it, short
+        // enough to self-heal within a demo rather than needing the app's data
+        // cleared by hand.
+        private const val TOTAL_FAILURE_CACHE_INVALIDATION_THRESHOLD = 3
+
         // A candidate has to beat the active one by more than this to be worth a
         // reconnect - otherwise routine measurement jitter (a few ms either way
         // on an already-fine link) would cause pointless reconnect churn, each of
@@ -396,6 +404,7 @@ class YggdrasilVpnService : VpnService() {
      */
     private inner class PeerMonitor(private val candidates: List<String>) {
         private var activeLatencyMs: Long? = null
+        private var consecutiveTotalFailures = 0
 
         fun run() {
             while (running.get()) {
@@ -442,8 +451,31 @@ class YggdrasilVpnService : VpnService() {
                 // the app-level UI reflects reality instead of showing a stale
                 // "connected" address that no longer routes anywhere.
                 if (meshUp.get()) disconnectMesh()
+
+                // Confirmed on real hardware as a real, demo-blocking bug: a
+                // candidate pool that never has anything reachable (e.g. a
+                // corrupted or otherwise degraded live-fetched peer cache -
+                // see YggdrasilPeerListCache's own doc) looked identical to
+                // "temporarily offline" from here, and kept retrying the same
+                // bad pool forever - restarting the app, toggling wifi/5G,
+                // none of it helped, since every fresh start just reloaded
+                // the same bad candidates from disk again. Only clearing the
+                // app's data (wiping that cache along with everything else)
+                // actually fixed it. After several consecutive fully-dead
+                // rounds - long enough that this reads as "the pool itself is
+                // bad," not routine bad luck on one measurement - drop the
+                // live-fetched cache so the NEXT connect attempt (this
+                // session's own Retry button, or a fresh app start) falls
+                // back to the known-good baked-in snapshot instead. Doesn't
+                // change this session's own already-fixed candidate list.
+                consecutiveTotalFailures++
+                if (consecutiveTotalFailures == TOTAL_FAILURE_CACHE_INVALIDATION_THRESHOLD) {
+                    Log.i(TAG, "$consecutiveTotalFailures consecutive rounds with nothing reachable - invalidating live peer cache")
+                    YggdrasilPeerListCache.invalidate(this@YggdrasilVpnService)
+                }
                 return
             }
+            consecutiveTotalFailures = 0
 
             val current = activePeerUri
             val shouldSwitch = when {

@@ -7,6 +7,7 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.URI
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
@@ -49,12 +50,42 @@ object YggdrasilPeerListCache {
     // entries in these files are skipped (PeerLatencyProbe can't measure them).
     private val PEER_LINE_REGEX = Regex("`(tcp|tls)://[^`]+`")
 
+    // Confirmed on real hardware as a real demo-blocking bug without this: a
+    // malformed or garbage entry that slipped through the regex (a GitHub
+    // markdown format change, an encoding quirk, anything) got cached and
+    // then retried forever, every cycle, indistinguishable in the UI from a
+    // genuinely offline peer - nothing short of clearing the app's data ever
+    // recovered, since the bad entry just kept getting reloaded from disk on
+    // every launch. A fetch is only trusted enough to overwrite the existing
+    // cache if most of what it found actually parses as a real peer URI, and
+    // any individual entry that doesn't is dropped rather than poisoning the
+    // whole pool.
+    private const val MIN_VALID_PEERS_TO_ACCEPT_FETCH = 5
+
+    private fun isValidPeerUri(uri: String): Boolean {
+        val parsed = runCatching { URI(uri) }.getOrNull() ?: return false
+        return parsed.scheme in setOf("tcp", "tls") && parsed.host != null && parsed.port in 1..65535
+    }
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.SECONDS)
         .build()
 
     private fun cacheFile(context: Context) = File(context.filesDir, CACHE_FILE_NAME)
+
+    /** Deletes the on-disk cache, if any, so the next [get] falls back to
+     * YggdrasilBootstrapPeers' known-good baked-in snapshot instead - used by
+     * PeerMonitor when every candidate in the current pool has been
+     * unreachable for long enough that the pool itself, not just bad luck, is
+     * the likely explanation (see its own doc). Doesn't touch the CURRENTLY
+     * running session's already-fixed candidate list (that's immutable for
+     * this service instance's lifetime) - only the next connect attempt
+     * benefits, whether that's this session's own Retry button or a fresh
+     * app start. */
+    fun invalidate(context: Context) {
+        runCatching { cacheFile(context).delete() }
+    }
 
     /** The current best-known candidate pool - see class doc for freshness/
      * blocking behavior. */
@@ -72,10 +103,17 @@ object YggdrasilPeerListCache {
         return try {
             val json = JSONObject(file.readText(Charsets.UTF_8))
             val array = json.getJSONArray("peers")
-            Cache(
-                fetchedAtMs = json.getLong("fetchedAtMs"),
-                peers = (0 until array.length()).map { array.getString(it) },
-            )
+            val peers = (0 until array.length()).map { array.getString(it) }.filter { isValidPeerUri(it) }
+            // Re-validated on every read, not just at write time - protects
+            // against a cache already written to disk by an older version of
+            // this class before this validation existed (see its own doc),
+            // not just future writes. Same "don't trust a suspiciously small/
+            // degraded result" floor as a fresh fetch.
+            if (peers.size < MIN_VALID_PEERS_TO_ACCEPT_FETCH) {
+                Log.i(TAG, "peer cache has too few valid entries (${peers.size}), discarding")
+                return null
+            }
+            Cache(fetchedAtMs = json.getLong("fetchedAtMs"), peers = peers)
         } catch (e: Exception) {
             Log.i(TAG, "reading peer cache failed: $e")
             null
@@ -87,7 +125,13 @@ object YggdrasilPeerListCache {
         val appContext = context.applicationContext
         thread(name = "YggdrasilPeerListFetch", isDaemon = true) {
             val fetched = fetchLive()
-            if (fetched.isNotEmpty()) writeCache(appContext, fetched)
+            // Below the sanity floor reads as "something went wrong with the
+            // fetch itself" (a format change, a bad response, a half-broken
+            // network) rather than "these are genuinely all the peers there
+            // are" - leaves the existing cache (or the baked-in snapshot, if
+            // there was none yet) in place rather than risking a near-empty
+            // or otherwise-degraded pool replacing a working one.
+            if (fetched.size >= MIN_VALID_PEERS_TO_ACCEPT_FETCH) writeCache(appContext, fetched)
         }
     }
 
@@ -100,7 +144,8 @@ object YggdrasilPeerListCache {
                     if (!response.isSuccessful) return@use
                     val body = response.body?.string() ?: return@use
                     PEER_LINE_REGEX.findAll(body).forEach { match ->
-                        peers.add(match.value.trim('`'))
+                        val uri = match.value.trim('`')
+                        if (isValidPeerUri(uri)) peers.add(uri)
                     }
                 }
             } catch (e: Exception) {
