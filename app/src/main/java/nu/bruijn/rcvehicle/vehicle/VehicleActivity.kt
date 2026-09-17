@@ -670,6 +670,28 @@ class VehicleActivity : AppCompatActivity() {
         val isRetarget = currentVideoControllerAddress != null
         currentVideoControllerAddress = controllerAddress
 
+        // Re-fetched on every single controller connect, not just once when
+        // the USB port first opens - confirmed as a real bug without this:
+        // the board's calibration (Menu, or the browser's own Settings page)
+        // can be changed at any time while the USB cable stays plugged in the
+        // whole session, and the app kept using whatever it queried at
+        // connect time forever after, silently diverging from the browser
+        // (which re-reads current values on every page load) once the board
+        // was recalibrated mid-session. See UsbServoBridge.checkCalibration()'s
+        // doc - a no-op if the active link isn't USB serial.
+        service?.usbServoBridge?.checkCalibration { calibration ->
+            if (calibration != null) {
+                service?.activeLink?.setCalibration(
+                    calibration.steerMin, calibration.steerCenter, calibration.steerMax,
+                    calibration.throttleMin, calibration.throttleCenter, calibration.throttleMax,
+                )
+                log(
+                    "using board's calibration: steer=${calibration.steerMin}/${calibration.steerCenter}/${calibration.steerMax} " +
+                        "throttle=${calibration.throttleMin}/${calibration.throttleCenter}/${calibration.throttleMax}",
+                )
+            }
+        }
+
         if (isRetarget) {
             // A different controller than the one video/audio are currently
             // pointed at just took ownership (ControlLink.listen()'s lock) -
