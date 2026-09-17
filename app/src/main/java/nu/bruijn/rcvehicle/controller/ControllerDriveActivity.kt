@@ -681,6 +681,16 @@ class ControllerDriveActivity : AppCompatActivity() {
     private var gpxTrack: GpxTrack? = null
     private var gpxBaseName: String? = null
 
+    // Per direct request: a .gpx track is always captured while (and only
+    // while) recording video, independent of the debug GPS/speed overlay
+    // checkbox (telemetryEnabled) - that checkbox only controls whether the
+    // overlay is shown, not whether the vehicle sends telemetry at all. If
+    // recording starts while that checkbox happens to be off, this forces
+    // telemetry on for the duration of the recording and back off again
+    // when it stops - unless the user explicitly turned the checkbox on
+    // themselves in the meantime, which takes priority.
+    private var telemetryForcedForRecording = false
+
     /** Holds everything one recording attempt needs, whichever way it was created. */
     private class RecordingTarget(
         val session: MuxerSession,
@@ -796,6 +806,10 @@ class ControllerDriveActivity : AppCompatActivity() {
                 gpxTrack = GpxTrack(target.baseName)
                 gpxBaseName = target.baseName
                 isRecording = true
+                if (!telemetryEnabled) {
+                    telemetryForcedForRecording = true
+                    controlLink.sendTelemetryEnable(true)
+                }
                 buttonRecord.setImageResource(R.drawable.record_button_active)
                 log("recording to ${target.displayPath}${if (target.session.expectAudio) " (with audio)" else ""}")
             } else {
@@ -838,6 +852,13 @@ class ControllerDriveActivity : AppCompatActivity() {
         }
         recordingUri = null
         isRecording = false
+        if (telemetryForcedForRecording) {
+            telemetryForcedForRecording = false
+            // Only actually turn it back off if the user didn't separately
+            // switch the checkbox on themselves while recording was running -
+            // that explicit choice takes priority over undoing our own force.
+            if (!telemetryEnabled) controlLink.sendTelemetryEnable(false)
+        }
         gpxTrack?.let { track -> gpxBaseName?.let { saveGpxTrack(track, it, log) } }
         gpxTrack = null
         gpxBaseName = null
