@@ -498,7 +498,14 @@ class VehicleActivity : AppCompatActivity() {
 
         val listener = object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {}
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                // Local driving's own "connect" moment, for calibration
+                // refresh purposes - see refreshCalibration()'s doc. Fires
+                // once per drag, not continuously, same reasoning as
+                // maybeStartVideo() only refreshing once per new controller
+                // rather than every control frame.
+                refreshCalibration(::log)
+            }
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 // Snap back to center on release, like a real self-centering joystick.
                 seekBar?.progress = 100
@@ -665,20 +672,22 @@ class VehicleActivity : AppCompatActivity() {
             .first().network
     }
 
-    private fun maybeStartVideo(controllerAddress: InetAddress, log: (String) -> Unit) {
-        if (currentVideoControllerAddress == controllerAddress) return
-        val isRetarget = currentVideoControllerAddress != null
-        currentVideoControllerAddress = controllerAddress
-
-        // Re-fetched on every single controller connect, not just once when
-        // the USB port first opens - confirmed as a real bug without this:
-        // the board's calibration (Menu, or the browser's own Settings page)
-        // can be changed at any time while the USB cable stays plugged in the
-        // whole session, and the app kept using whatever it queried at
-        // connect time forever after, silently diverging from the browser
-        // (which re-reads current values on every page load) once the board
-        // was recalibrated mid-session. See UsbServoBridge.checkCalibration()'s
-        // doc - a no-op if the active link isn't USB serial.
+    /**
+     * Re-fetched every time driving actually (re)starts - a remote controller
+     * newly connecting (maybeStartVideo() below), or the local debug sliders
+     * being touched again (onStartTrackingTouch below) - not just once when
+     * the USB port first opens. Confirmed as a real bug without this: the
+     * board's calibration (Menu, or the browser's own Settings page) can be
+     * changed at any time while the USB cable stays plugged in the whole
+     * session, and the app kept using whatever it queried at connect time
+     * forever after, silently diverging from the browser (which re-reads
+     * current values on every page load) once the board was recalibrated
+     * mid-session - and this affects local slider driving exactly as much as
+     * a remote controller's, since both go through the same ServoLink. See
+     * UsbServoBridge.checkCalibration()'s doc - a no-op if the active link
+     * isn't USB serial.
+     */
+    private fun refreshCalibration(log: (String) -> Unit) {
         service?.usbServoBridge?.checkCalibration { calibration ->
             if (calibration != null) {
                 service?.activeLink?.setCalibration(
@@ -691,6 +700,14 @@ class VehicleActivity : AppCompatActivity() {
                 )
             }
         }
+    }
+
+    private fun maybeStartVideo(controllerAddress: InetAddress, log: (String) -> Unit) {
+        if (currentVideoControllerAddress == controllerAddress) return
+        val isRetarget = currentVideoControllerAddress != null
+        currentVideoControllerAddress = controllerAddress
+
+        refreshCalibration(log)
 
         if (isRetarget) {
             // A different controller than the one video/audio are currently
