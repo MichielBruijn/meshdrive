@@ -5,6 +5,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -40,6 +43,12 @@ class ControlLink {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var receiveJob: Job? = null
     private var pingJob: Job? = null
+
+    /** See VideoReceiver.totalBytesReceived's doc - same purpose. Shared by both
+     * sides (listen()'s vehicle-side receive loop and startPing()'s controller-
+     * side one) since they never run in the same instance at once. */
+    @Volatile var totalBytesReceived: Long = 0
+        private set
 
     // Set by connect()/listen() - every send() signs with this, every receive
     // verifies against it and silently drops anything that doesn't match (see
@@ -164,6 +173,7 @@ class ControlLink {
             while (isActive) {
                 try {
                     sock.receive(packet)
+                    totalBytesReceived += packet.length
                     val verified = SignedFrame.verify(packet.data, packet.length, secret) ?: continue
                     when (val decoded = ControlFrame.decode(verified, verified.size)) {
                         is ControlFrame.Decoded.Pong -> onRtt(SystemClock.elapsedRealtime() - decoded.sentAtMs)
@@ -212,9 +222,25 @@ class ControlLink {
      * ControllerActivity's recent-vehicles online-dot probes every listed
      * vehicle regardless of who's currently driving it.
      */
+    private var listenPort: Int = 0
+    private var listenCallback: ((ControlFrame.Decoded, InetAddress) -> Unit)? = null
+
     fun listen(port: Int, secret: ByteArray, onReceived: (ControlFrame.Decoded, InetAddress) -> Unit) {
+        listenPort = port
+        listenCallback = onReceived
         this.secret = secret
-        val sock = DatagramSocket(port).apply { markHighPriority() }
+        // reuseAddress before bind(), not the plain DatagramSocket(port)
+        // constructor - confirmed live as a real, app-crashing bug without
+        // this: restartListening() closing the old socket and immediately
+        // binding a new one to the same port raced the OS actually releasing
+        // it, throwing an uncaught BindException (EADDRINUSE) that took the
+        // whole app down right as it was trying to self-heal from a network
+        // churn - the single worst possible moment for it.
+        val sock = DatagramSocket(null).apply {
+            reuseAddress = true
+            bind(java.net.InetSocketAddress(port))
+            markHighPriority()
+        }
         socket = sock
         receiveJob = scope.launch {
             val buffer = ByteArray(64)
@@ -222,6 +248,7 @@ class ControlLink {
             while (isActive) {
                 try {
                     sock.receive(packet)
+                    totalBytesReceived += packet.length
                     val verified = SignedFrame.verify(packet.data, packet.length, secret) ?: continue
                     lastSenderAddress = packet.address
                     lastSenderPort = packet.port
@@ -266,6 +293,28 @@ class ControlLink {
         socket = null
     }
 
+    /**
+     * Vehicle side: tears down and re-creates the listening socket + receive
+     * loop with the same port/secret/callback as the most recent listen()
+     * call. A plain "swap the socket field" refresh (VideoSender/AudioSender's
+     * refreshSocket()) doesn't work here - listen()'s receive loop closes over
+     * its own local `sock` val, so reassigning the `socket` field never
+     * reaches it. Confirmed live as a real bug without this: after a network
+     * churn on the vehicle, incoming Control frames kept working (delivery to
+     * an already-bound wildcard socket survives an interface swap just fine),
+     * but this loop's own Pong/Busy *replies* - sent from that same
+     * since-stale socket - silently stopped reaching the controller, which
+     * then never clears its "connection lost" warning even once everything
+     * else has recovered. No-op if listen() was never called.
+     */
+    fun restartListening() {
+        val callback = listenCallback ?: return
+        val port = listenPort
+        val secret = this.secret
+        close()
+        listen(port, secret, callback)
+    }
+
     companion object {
         const val PORT = 7861
 
@@ -301,25 +350,33 @@ class ControlLink {
          */
         suspend fun probeOnline(address: String, secret: ByteArray, attempts: Int = 3, timeoutMs: Int = 1200): Boolean = withContext(Dispatchers.IO) {
             val inetAddress = runCatching { InetAddress.getByName(address) }.getOrNull() ?: return@withContext false
-            for (attempt in 1..attempts) {
-                try {
-                    DatagramSocket().use { socket ->
-                        socket.soTimeout = timeoutMs
-                        val ping = SignedFrame.sign(ControlFrame.encodePing(SystemClock.elapsedRealtime()), secret)
-                        socket.send(DatagramPacket(ping, ping.size, inetAddress, PORT))
-                        val buffer = ByteArray(64)
-                        val packet = DatagramPacket(buffer, buffer.size)
-                        socket.receive(packet) // throws SocketTimeoutException if nothing replies in time
-                        val verified = SignedFrame.verify(packet.data, packet.length, secret)
-                        if (verified != null && ControlFrame.decode(verified, verified.size) is ControlFrame.Decoded.Pong) {
-                            return@withContext true
+            // All attempts fired at once and raced, not one-after-another -
+            // worst case (genuinely offline) is bounded by timeoutMs, not
+            // attempts*timeoutMs. Confirmed as a real, felt delay: with the
+            // sequential version, missing just the first of three attempts
+            // (ordinary packet loss, not uncommon on this mesh) meant waiting
+            // out that attempt's full timeout before the retry that actually
+            // lands even started.
+            coroutineScope {
+                (1..attempts).map {
+                    async {
+                        try {
+                            DatagramSocket().use { socket ->
+                                socket.soTimeout = timeoutMs
+                                val ping = SignedFrame.sign(ControlFrame.encodePing(SystemClock.elapsedRealtime()), secret)
+                                socket.send(DatagramPacket(ping, ping.size, inetAddress, PORT))
+                                val buffer = ByteArray(64)
+                                val packet = DatagramPacket(buffer, buffer.size)
+                                socket.receive(packet) // throws SocketTimeoutException if nothing replies in time
+                                val verified = SignedFrame.verify(packet.data, packet.length, secret)
+                                verified != null && ControlFrame.decode(verified, verified.size) is ControlFrame.Decoded.Pong
+                            }
+                        } catch (_: Exception) {
+                            false
                         }
                     }
-                } catch (_: Exception) {
-                    // try again, unless this was the last attempt
-                }
+                }.awaitAll().any { it }
             }
-            false
         }
     }
 }

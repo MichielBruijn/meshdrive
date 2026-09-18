@@ -18,6 +18,9 @@ import androidx.lifecycle.lifecycleScope
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -54,9 +57,12 @@ class ControllerActivity : AppCompatActivity() {
             }
             val (address, secret) = pair
             findViewById<EditText>(R.id.editVehicleAddress).setText(address)
+            val vehicleId = VehiclePairing.vehicleId(secret)
             lifecycleScope.launch {
-                modePrefs.setVehicleSecret(address, secret)
-                connect(address)
+                // Merges into the existing entry (same vehicleId) if this vehicle
+                // was already known at a different address - see ModePrefs' doc.
+                modePrefs.recordVehicleSighting(vehicleId, address, secret)
+                connect(vehicleId)
             }
         }
     }
@@ -93,15 +99,28 @@ class ControllerActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             val (address, secret) = pair
+            val vehicleId = VehiclePairing.vehicleId(secret)
             lifecycleScope.launch {
-                modePrefs.setVehicleSecret(address, secret)
-                connect(address)
+                modePrefs.recordVehicleSighting(vehicleId, address, secret)
+                connect(vehicleId)
             }
         }
     }
 
+    // Guards the recent-vehicles rows' click listeners for a brief moment after
+    // this screen (re)appears - confirmed live as a real bug without it: coming
+    // back from the driving screen (which sits directly above a full-width row
+    // list here) via the nav bar's back control, a touch that's really meant
+    // for that back action can land on a row a fraction of a second after it
+    // re-renders, immediately reconnecting to whatever vehicle happens to be
+    // first in the list. Any genuine tap meant for a row will always be well
+    // past this window.
+    private var resumedAtMs = 0L
+    private val ROW_TAP_GUARD_MS = 400L
+
     override fun onResume() {
         super.onResume()
+        resumedAtMs = android.os.SystemClock.elapsedRealtime()
         // Rebuilt every time this screen becomes visible (not just once in onCreate) -
         // coming back here after driving is exactly when the list/online status is
         // most likely to have changed.
@@ -115,17 +134,44 @@ class ControllerActivity : AppCompatActivity() {
         probeJobs.clear()
         container.removeAllViews()
         lifecycleScope.launch {
-            val addresses = modePrefs.recentVehicleAddresses.first()
-            title.visibility = if (addresses.isEmpty()) View.GONE else View.VISIBLE
-            addresses.forEach { addVehicleRow(it, container) }
+            val vehicleIds = modePrefs.recentVehicleIds.first()
+            title.visibility = if (vehicleIds.isEmpty()) View.GONE else View.VISIBLE
+            vehicleIds.forEach { addVehicleRow(it, container) }
         }
     }
 
-    /** One row: an online/offline dot (probed live, see ControlLink.probeOnline()),
-     * a friendly assigned name in place of the raw address (ModePrefs.nameForVehicle()
-     * - per direct request, a known vehicle's Yggdrasil address shouldn't need to be
-     * shown at all), and a small remove button - tapping the row itself connects. */
-    private fun addVehicleRow(address: String, container: LinearLayout) {
+    /** Probes every address [vehicleId] has been seen at (see ModePrefs' doc -
+     * usually one, occasionally two: built-in Yggdrasil vs. the standalone app
+     * each give it a different address) in parallel, and bumps whichever one
+     * answers to the front of its list via markAddressReachable, so a working
+     * address keeps being tried first and a stale one sinks to the back rather
+     * than being retried every time. Returns the answering address, or the
+     * first (most-recently-working) one if none answered within the probe. */
+    private suspend fun probeAndPickAddress(
+        vehicleId: String,
+        addresses: List<String>,
+        secret: ByteArray,
+        attempts: Int = 3,
+        timeoutMs: Int = 1200,
+    ): Pair<String, Boolean> = coroutineScope {
+        val results = addresses.map { address ->
+            async { address to ControlLink.probeOnline(address, secret, attempts = attempts, timeoutMs = timeoutMs) }
+        }.awaitAll()
+        val reachable = results.firstOrNull { it.second }
+        if (reachable != null) {
+            modePrefs.markAddressReachable(vehicleId, reachable.first)
+            reachable.first to true
+        } else {
+            addresses.first() to false
+        }
+    }
+
+    /** One row: an online/offline dot (probed live across all known addresses,
+     * see [probeAndPickAddress]), a friendly assigned name in place of the raw
+     * address (ModePrefs.nameForVehicle() - per direct request, a known
+     * vehicle's Yggdrasil address shouldn't need to be shown at all), and a
+     * small remove button - tapping the row itself connects. */
+    private fun addVehicleRow(vehicleId: String, container: LinearLayout) {
         fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
         val dot = TextView(this).apply {
@@ -135,22 +181,25 @@ class ControllerActivity : AppCompatActivity() {
             setPadding(0, 0, dp(12), 0)
         }
         val addressText = TextView(this).apply {
-            text = address // placeholder until the name below resolves
+            text = vehicleId // placeholder until the name below resolves
             ellipsize = TextUtils.TruncateAt.MIDDLE
             maxLines = 1
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         // Also used by the remove-confirmation dialog below, so it can name the
-        // vehicle instead of showing a raw address - defaults to the address itself
-        // until the name lookup resolves (should be near-instant in practice).
-        var resolvedName = address
+        // vehicle instead of showing a raw address - defaults to the vehicleId
+        // itself until the name lookup resolves (should be near-instant in
+        // practice).
+        var resolvedName = vehicleId
         lifecycleScope.launch {
-            val name = modePrefs.nameForVehicle(address)
+            val name = modePrefs.nameForVehicle(vehicleId)
             resolvedName = name
-            // The raw address is still useful for troubleshooting a specific link,
-            // just not front-and-center - only tacked on in debug mode.
+            // The raw address(es) are still useful for troubleshooting a
+            // specific link, just not front-and-center - only tacked on in
+            // debug mode.
             val debugEnabled = modePrefs.debugEnabled.first()
-            addressText.text = if (debugEnabled) "$name ($address)" else name
+            val addresses = modePrefs.addressesForVehicle(vehicleId)
+            addressText.text = if (debugEnabled) "$name (${addresses.joinToString(", ")})" else name
         }
         val removeButton = TextView(this).apply {
             text = "✕"
@@ -163,7 +212,7 @@ class ControllerActivity : AppCompatActivity() {
                 AlertDialog.Builder(this@ControllerActivity)
                     .setMessage(getString(R.string.controller_remove_vehicle_confirm, resolvedName))
                     .setPositiveButton(R.string.controller_remove_vehicle) { _, _ ->
-                        lifecycleScope.launch { modePrefs.removeRecentVehicleAddress(address) }
+                        lifecycleScope.launch { modePrefs.removeVehicle(vehicleId) }
                         container.removeView(this@apply.parent as View)
                     }
                     .setNegativeButton(android.R.string.cancel, null)
@@ -179,7 +228,9 @@ class ControllerActivity : AppCompatActivity() {
             addView(dot)
             addView(addressText)
             addView(removeButton)
-            setOnClickListener { connect(address) }
+            setOnClickListener {
+                if (android.os.SystemClock.elapsedRealtime() - resumedAtMs >= ROW_TAP_GUARD_MS) connect(vehicleId)
+            }
         }
         container.addView(row)
 
@@ -190,18 +241,19 @@ class ControllerActivity : AppCompatActivity() {
         // connecting, turns out to be fine. Keep re-probing on a steady cadence
         // instead of trusting one snapshot, so the dot self-corrects.
         probeJobs += lifecycleScope.launch {
-            // No stored secret means this address was never actually paired via
+            // No stored secret means this vehicle was never actually paired via
             // QR (or predates authentication) - can't probe it at all now, same
             // as it being offline, since an unsigned Ping is simply dropped by
             // the vehicle rather than answered.
-            val secret = modePrefs.secretForVehicle(address)
+            val secret = modePrefs.secretForVehicle(vehicleId)
             if (secret == null) {
                 dot.setTextColor(Color.parseColor("#9E9E9E"))
                 dot.contentDescription = getString(R.string.controller_vehicle_offline)
                 return@launch
             }
             while (isActive) {
-                val online = ControlLink.probeOnline(address, secret)
+                val addresses = modePrefs.addressesForVehicle(vehicleId)
+                val (_, online) = if (addresses.isEmpty()) "" to false else probeAndPickAddress(vehicleId, addresses, secret)
                 dot.setTextColor(if (online) Color.parseColor("#4CAF50") else Color.parseColor("#9E9E9E"))
                 dot.contentDescription = getString(
                     if (online) R.string.controller_vehicle_online else R.string.controller_vehicle_offline
@@ -213,11 +265,15 @@ class ControllerActivity : AppCompatActivity() {
 
     /** Also handles re-connecting to an already-known vehicle (tapping a
      * recent-vehicles row), where the secret isn't in scope at the call site -
-     * always looked up from ModePrefs rather than threaded through every caller. */
-    private fun connect(address: String) {
-        if (address.isEmpty()) return
+     * always looked up from ModePrefs rather than threaded through every caller.
+     * Tries every address this vehicleId has been seen at (see ModePrefs' doc)
+     * and connects via whichever one actually answers, falling back to the
+     * most-recently-working one if none do so the drive screen's own retry/
+     * timeout UI can still take over rather than this dead-ending here. */
+    private fun connect(vehicleId: String) {
+        if (vehicleId.isEmpty()) return
         lifecycleScope.launch {
-            val secret = modePrefs.secretForVehicle(address)
+            val secret = modePrefs.secretForVehicle(vehicleId)
             if (secret == null) {
                 // A stale entry from before authentication existed, or the QR/
                 // manual-paste flow failed to store it - either way, there's no
@@ -226,8 +282,14 @@ class ControllerActivity : AppCompatActivity() {
                 Toast.makeText(this@ControllerActivity, "No pairing secret for this vehicle - scan its QR code again", Toast.LENGTH_LONG).show()
                 return@launch
             }
+            val addresses = modePrefs.addressesForVehicle(vehicleId)
+            if (addresses.isEmpty()) {
+                Toast.makeText(this@ControllerActivity, "No known address for this vehicle - scan its QR code again", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            val (address, _) = probeAndPickAddress(vehicleId, addresses, secret)
             Log.d("RCDebug", "connecting to $address")
-            modePrefs.addRecentVehicleAddress(address)
+            modePrefs.touchRecentVehicle(vehicleId)
             startActivity(Intent(this@ControllerActivity, ControllerDriveActivity::class.java).apply {
                 putExtra(ControllerDriveActivity.EXTRA_VEHICLE_ADDRESS, address)
                 putExtra(ControllerDriveActivity.EXTRA_VEHICLE_SECRET, secret)

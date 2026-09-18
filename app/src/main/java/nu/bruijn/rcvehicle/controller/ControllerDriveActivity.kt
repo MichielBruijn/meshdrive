@@ -70,7 +70,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         // they were configured for, but going *above* it is what typically requires
         // a reconfigure - so configuring at the largest preset up front means the
         // resolution picker/auto-quality loop below never needs to touch the
-        // decoder, only the encoder (VideoSender.setQuality()). All three presets
+        // decoder, only the encoder (VideoSender.setQuality()). All four presets
         // share a 4:3 aspect ratio for exactly this reason - the aspect-ratio math
         // in updateVideoTransform() below doesn't need to know which one is active.
         private val VIDEO_WIDTH = VideoQuality.HIGH.width
@@ -117,6 +117,9 @@ class ControllerDriveActivity : AppCompatActivity() {
     // Debug overlay state.
     private var lastFps = -1f
     private var lastLatencyMs = -1L
+    private var lastBandwidthBytesPerSec = -1L
+    private var lastBandwidthSampleAtMs = 0L
+    private var lastBandwidthSampleTotalBytes = 0L
     private var telemetryEnabled = false
     private var lastTelemetry: ControlFrame.Decoded.Telemetry? = null
 
@@ -168,6 +171,13 @@ class ControllerDriveActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_controller_drive)
+
+        // One of DebugFileLogger's several start() call sites - see its own doc.
+        lifecycleScope.launch {
+            if (ModePrefs(applicationContext).debugFileLoggingEnabled.first()) {
+                nu.bruijn.rcvehicle.common.DebugFileLogger.start(applicationContext)
+            }
+        }
 
         // Full-bleed video behind the status/nav bars looks fine, but the debug
         // overlay text (top-right) and the log (top-left) don't - on a Pixel's
@@ -221,7 +231,31 @@ class ControllerDriveActivity : AppCompatActivity() {
         fun updateDebugOverlay() {
             val fpsText = if (lastFps >= 0) String.format("%.0f", lastFps) else "--"
             val latencyText = if (lastLatencyMs >= 0) lastLatencyMs.toString() else "--"
-            textDebugOverlay.text = "FPS: $fpsText | Latency: $latencyText ms"
+            val bwText = when {
+                lastBandwidthBytesPerSec < 0 -> "--"
+                lastBandwidthBytesPerSec >= 1_000_000 -> String.format("%.1f MB/s", lastBandwidthBytesPerSec / 1_000_000.0)
+                else -> String.format("%.0f KB/s", lastBandwidthBytesPerSec / 1_000.0)
+            }
+            textDebugOverlay.text = "FPS: $fpsText | Latency: $latencyText ms | BW: $bwText"
+        }
+
+        // Total incoming bytes (video+audio+control combined - together, video's
+        // the overwhelming majority, but per direct request this should actually
+        // reflect what crossed the network, not just estimate off video alone) since
+        // the connection started, sampled here rather than computed fresh each call -
+        // called from videoReceiver.onFps below, already firing ~once/sec, no reason
+        // for a second timer just for this.
+        fun sampleBandwidth() {
+            val now = System.currentTimeMillis()
+            val totalBytes = videoReceiver.totalBytesReceived + audioReceiver.totalBytesReceived + controlLink.totalBytesReceived
+            if (lastBandwidthSampleAtMs != 0L) {
+                val elapsedMs = now - lastBandwidthSampleAtMs
+                if (elapsedMs > 0) {
+                    lastBandwidthBytesPerSec = (totalBytes - lastBandwidthSampleTotalBytes) * 1000 / elapsedMs
+                }
+            }
+            lastBandwidthSampleAtMs = now
+            lastBandwidthSampleTotalBytes = totalBytes
         }
 
         // GPS/speed HUD on the video itself - its own overlay (per direct request,
@@ -265,6 +299,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         videoReceiver.onFps = { fps ->
             runOnUiThread {
                 lastFps = fps
+                sampleBandwidth()
                 updateDebugOverlay()
                 if (autoQuality) {
                     when {
@@ -272,7 +307,13 @@ class ControllerDriveActivity : AppCompatActivity() {
                             lowFpsStreak++
                             healthyFpsStreak = 0
                             if (lowFpsStreak >= STEP_DOWN_AFTER_TICKS) {
-                                setQuality(currentQualityIndex - 1)
+                                // Never auto-steps down into Ultra Low - see its
+                                // own doc: it targets ~15fps by design, which
+                                // would keep this loop permanently below
+                                // HEALTHY_FPS_THRESHOLD and unable to ever step
+                                // back up on its own. Reachable only by tapping
+                                // its own button.
+                                setQuality(maxOf(currentQualityIndex - 1, VideoQuality.LOW.ordinal))
                                 lowFpsStreak = 0
                             }
                         }
@@ -299,7 +340,16 @@ class ControllerDriveActivity : AppCompatActivity() {
         textureVideo.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
                 updateVideoTransform(textureVideo, videoContainer)
-                startVideo(surface)
+                // A recording in progress kept the receiver alive through a
+                // background/foreground cycle (see onPause()'s doc) - just
+                // reattach it to this (possibly brand new) Surface instead of
+                // tearing down and reopening the socket, which would
+                // interrupt the very recording this exists to protect.
+                if (videoReceiver.isRunning) {
+                    videoReceiver.updateOutputSurface(Surface(surface))
+                } else {
+                    startVideo(surface)
+                }
             }
 
             override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
@@ -307,7 +357,10 @@ class ControllerDriveActivity : AppCompatActivity() {
             }
 
             override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                videoReceiver.stop()
+                // Not while recording - see onPause()'s doc, same reasoning:
+                // the receive loop (and the recording riding on it) must
+                // survive this, only the display surface is going away.
+                if (!isRecording) videoReceiver.stop()
                 return true
             }
 
@@ -435,12 +488,14 @@ class ControllerDriveActivity : AppCompatActivity() {
         // three-buttons-plus-checkbox layout per direct request: same four
         // mutually exclusive choices, but every affordance now looks and behaves
         // the same way.
+        val buttonQualityUltraLow = findViewById<Button>(R.id.buttonQualityUltraLow)
         val buttonQualityLow = findViewById<Button>(R.id.buttonQualityLow)
         val buttonQualityMedium = findViewById<Button>(R.id.buttonQualityMedium)
         val buttonQualityHigh = findViewById<Button>(R.id.buttonQualityHigh)
         val buttonQualityAuto = findViewById<Button>(R.id.buttonQualityAuto)
         val defaultQualityTint = buttonQualityLow.backgroundTintList
         val qualityButtons = listOf(
+            VideoQuality.ULOW.ordinal to buttonQualityUltraLow,
             VideoQuality.LOW.ordinal to buttonQualityLow,
             VideoQuality.MEDIUM.ordinal to buttonQualityMedium,
             VideoQuality.HIGH.ordinal to buttonQualityHigh,
@@ -637,7 +692,17 @@ class ControllerDriveActivity : AppCompatActivity() {
      * Surface on every device - confirmed by direct report: video never came back
      * after unlocking, only a full app restart fixed it (onSurfaceTextureAvailable
      * simply never fired again). Rather than depend on that pairing, stop
-     * everything explicitly here and restart it explicitly in onResume().
+     * everything explicitly here and restart it explicitly in onResume() -
+     * EXCEPT a recording in progress, per direct request: backgrounding shouldn't
+     * cut a recording short just because nobody's looking at the screen right now.
+     * videoReceiver/audioReceiver's receive loops are what recording actually
+     * depends on (VideoRecorder remuxes the same access units fed to the decoder,
+     * not anything read back off the Surface - see VideoReceiver's doc), and both
+     * happily keep running with no visible Surface attached - decode calls into a
+     * torn-down one just fail silently (caught, logged, non-fatal) without
+     * affecting the parallel recorder?.feed() call. Video/audio can't restart
+     * blind into whatever they were doing before an unknown pause length, but
+     * recording's whole point is to keep going regardless.
      *
      * Stopping the steering/throttle tick loop here matters as much as the video:
      * without it, the loop kept sending whatever steerX/throttleY a finger left on
@@ -645,27 +710,44 @@ class ControllerDriveActivity : AppCompatActivity() {
      * stayed locked - the vehicle's own failsafe (falls back to neutral after a
      * gap in control frames) never got a gap to trigger on. That stale, frozen
      * command - not the restart itself - is the more likely explanation for the
-     * servo "jittering" once a restart finally reconnected things.
+     * servo "jittering" once a restart finally reconnected things. Same reasoning
+     * for always stopping micSender regardless of recording - talk-back audio
+     * goes TO the vehicle, isn't part of what's recorded (that's audioReceiver,
+     * FROM the vehicle), and there's no reason to keep transmitting this phone's
+     * own mic while nobody's holding it up to talk.
      */
     override fun onPause() {
         super.onPause()
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
-        // Finalizes the file properly instead of leaving it orphaned mid-recording -
-        // videoReceiver.stop()/audioReceiver.stop() below would otherwise drop their
-        // recorder references out from under an in-progress MuxerSession that never
-        // gets told to actually finish (see stopRecording()'s doc).
-        stopRecording(::log)
-        videoReceiver.stop()
-        audioReceiver.stop()
         micSender.stop()
+        if (!isRecording) {
+            // Nothing to preserve - tear all the way down to save battery
+            // while backgrounded, same as always. (If recording, there IS
+            // something to preserve, and these two are exactly what it
+            // depends on - see this function's own doc.)
+            videoReceiver.stop()
+            audioReceiver.stop()
+        }
     }
 
     override fun onResume() {
         super.onResume()
         tickRunnable?.let { tickHandler.post(it) }
-        startAudio()
         startMic()
-        textureVideoView.surfaceTexture?.let { startVideo(it) }
+        // If a recording kept video/audio alive through the background (see
+        // onPause()'s doc), they're already running - restarting either would
+        // reopen its socket and interrupt the very recording this exists to
+        // protect. Video still needs its *display* surface reattached (the
+        // TextureView's own Surface can be destroyed/recreated independently
+        // of any of this - AudioTrack playback has no equivalent, nothing to
+        // do there beyond not restarting it).
+        if (!audioReceiver.isRunning) startAudio()
+        val surface = textureVideoView.surfaceTexture
+        if (videoReceiver.isRunning) {
+            surface?.let { videoReceiver.updateOutputSurface(Surface(it)) }
+        } else {
+            surface?.let { startVideo(it) }
+        }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {

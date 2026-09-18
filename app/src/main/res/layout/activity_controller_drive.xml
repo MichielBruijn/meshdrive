@@ -150,6 +150,16 @@
         android:gravity="center_vertical"
         android:visibility="gone">
 
+        <!-- Below Low, not part of the auto-quality ladder (see
+             ControllerDriveActivity's auto-step-down doc) - reachable only by
+             tapping this button. Drops the vehicle's own ambient audio too. -->
+        <Button
+            android:id="@+id/buttonQualityUltraLow"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/controller_quality_ultra_low" />
+
         <Button
             android:id="@+id/buttonQualityLow"
             style="?android:attr/buttonStyleSmall"

@@ -66,6 +66,17 @@
         android:text="@string/main_debug_mode"
         android:visibility="gone" />
 
+    <!-- Same debug-mode gating as checkDebugMode above, but a separate pref
+         (ModePrefs.debugFileLoggingEnabled) - this is about what's saved to
+         disk (DebugFileLogger), not what's shown on screen. -->
+    <CheckBox
+        android:id="@+id/checkDebugFileLogging"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/main_debug_file_logging"
+        android:visibility="gone" />
+
     <!-- Same debug-mode gating as checkDebugMode above (MainActivity toggles both
          together) - comma-separated Yggdrasil peer URIs (tls://host:port), applied
          the next time a mode is picked (YggdrasilController.start() reads it fresh

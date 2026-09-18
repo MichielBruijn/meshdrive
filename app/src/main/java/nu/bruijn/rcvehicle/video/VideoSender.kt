@@ -76,8 +76,17 @@ class VideoSender(private val context: Context) {
     private var sensorOrientation = 90
     @Volatile private var displayRotationDegrees = 0
 
-    private val cameraThread = HandlerThread("VideoSenderCamera").apply { start() }
-    private val cameraHandler = Handler(cameraThread.looper)
+    // Recreated on every start(), not fixed for the instance's whole lifetime -
+    // matches AudioSender's own audioThread (see its doc): a HandlerThread that's
+    // been quitSafely()'d can't take a new Looper-bound callback afterward, so
+    // this instance couldn't survive a stop()+start() cycle otherwise. Needed
+    // once VehicleForegroundService started stopping video/audio entirely while
+    // no controller's been seen in a while (battery, see its idle-watch doc) -
+    // previously stop() was only ever called once, at the very end of a whole
+    // session (VehicleActivity/VehicleForegroundService onDestroy()), so this
+    // limitation never actually mattered before.
+    private var cameraThread: HandlerThread? = null
+    private var cameraHandler: Handler? = null
 
     // Not a property initializer, same reason as everything else deferred to
     // start(): context.getSystemService() throws if called before the hosting
@@ -130,23 +139,24 @@ class VideoSender(private val context: Context) {
     var onError: ((String) -> Unit)? = null
 
     private var currentQuality = VideoQuality.MEDIUM
-    private var fps = 20
 
     /** [secret] is the PairingSecret shared with the controller that scanned this
      * vehicle's QR code (see SignedFrame/PairingSecret) - every fragment is tagged
-     * with it so a stranger on the mesh can't watch this camera feed. */
+     * with it so a stranger on the mesh can't watch this camera feed. Frame rate
+     * is [quality]'s own now (VideoQuality.fps), not a separate parameter here -
+     * see its doc for why (ULOW wants a different one from the rest). */
     fun start(
         remoteHost: String,
         remotePort: Int,
         secret: ByteArray,
         quality: VideoQuality = VideoQuality.MEDIUM,
-        fps: Int = 20,
     ) {
         this.remotePort = remotePort
         this.secret = secret
-        this.fps = fps
         remoteAddress = InetAddress.getByName(remoteHost)
         socket = DatagramSocket()
+        cameraThread = HandlerThread("VideoSenderCamera").apply { start() }
+        cameraHandler = Handler(cameraThread!!.looper)
 
         sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -164,13 +174,32 @@ class VideoSender(private val context: Context) {
      * the rest of the session, even after control legitimately changed hands
      * (the old controller force-stopped, its ownership lock timed out,
      * someone else connected) - the new controller got working controls but
-     * no video at all. Deliberately NOT a stop()+start() cycle: cameraThread
-     * is a HandlerThread stop() quits for good, so this instance couldn't be
-     * safely restarted anyway - and the running pipeline doesn't need to be,
-     * only where its packets go.
+     * no video at all. Deliberately NOT a stop()+start() cycle even though
+     * that's safe now (see cameraThread's doc) - restarting the camera/encoder
+     * is real work and a visible glitch for no reason, when only where its
+     * packets go actually needs to change.
      */
     fun retarget(remoteHost: String) {
         remoteAddress = InetAddress.getByName(remoteHost)
+    }
+
+    /**
+     * Replaces just the UDP socket, touching nothing else - the camera/encoder
+     * pipeline doesn't care about network routing at all, only sendFrame() does.
+     * Called when the underlying Yggdrasil session has been torn down and
+     * re-established (e.g. another app grabbed the OS VPN slot and it was
+     * reclaimed afterwards - see YggdrasilVpnService's onRevoke() doc):
+     * confirmed live as a real bug without this - Yggdrasil itself reports
+     * "Connected" again just fine, but this socket was still bound against
+     * whatever the OS's default route was at the moment it was created, and a
+     * VPN interface being torn down and rebuilt (rather than just its
+     * connectivity blipping) doesn't reliably get picked up by an already-open
+     * socket the way an ordinary route change would. Only a full stop()+start()
+     * (or, cheaper, this) recovered it in practice.
+     */
+    fun refreshSocket() {
+        socket?.close()
+        socket = DatagramSocket()
     }
 
     /**
@@ -207,7 +236,7 @@ class VideoSender(private val context: Context) {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, quality.width, quality.height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, quality.bitrate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            setInteger(MediaFormat.KEY_FRAME_RATE, quality.fps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
         }
@@ -235,7 +264,7 @@ class VideoSender(private val context: Context) {
             }
 
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {}
-        }, cameraHandler)
+        }, cameraHandler!!)
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         val inputSurface = codec.createInputSurface()
         codec.start()
@@ -291,7 +320,7 @@ class VideoSender(private val context: Context) {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
                         try {
-                            session.setRepeatingRequest(builder.build(), null, cameraHandler)
+                            session.setRepeatingRequest(builder.build(), null, cameraHandler!!)
                         } catch (e: Exception) {
                             // Confirmed on real hardware as a real crash without this:
                             // the camera HAL can reject setRepeatingRequest() outright
@@ -327,7 +356,7 @@ class VideoSender(private val context: Context) {
                             onError?.invoke("capture session config failed at ${currentQuality.label} (lowest preset)")
                         }
                     }
-                }, cameraHandler)
+                }, cameraHandler!!)
                 } catch (e: Exception) {
                     // Confirmed on real hardware as a real crash without this:
                     // createCaptureSession() itself can throw synchronously
@@ -348,7 +377,7 @@ class VideoSender(private val context: Context) {
                 camera.close()
                 onError?.invoke("camera error: $error")
             }
-            }, cameraHandler)
+            }, cameraHandler!!)
         } catch (e: Exception) {
             // Same transient-HAL-hiccup class as the other two call sites in
             // this function (see their docs) - openCamera() itself can also
@@ -379,6 +408,8 @@ class VideoSender(private val context: Context) {
         closePipeline()
         socket?.close()
         socket = null
-        cameraThread.quitSafely()
+        cameraThread?.quitSafely()
+        cameraThread = null
+        cameraHandler = null
     }
 }

@@ -50,6 +50,16 @@ class VideoReceiver {
     private var fpsFrameCount = 0
     private var fpsWindowStartMs = 0L
 
+    /** Raw UDP bytes received since start() - includes the SignedFrame signature
+     * overhead on every packet, not just payload, so this is genuinely "what
+     * crossed the network", not an estimate. ControllerDriveActivity samples
+     * this (plus AudioReceiver's/ControlLink's own) once/sec, same cadence as
+     * onFps above, for the debug overlay's bandwidth readout - per direct
+     * request, to see whether e.g. VideoQuality.ULOW's audio-drop actually
+     * moves the number. */
+    @Volatile var totalBytesReceived: Long = 0
+        private set
+
     // Recording (ControllerDriveActivity's Record button) - VideoRecorder remuxes the
     // exact same access units fed to the decoder directly into an .mp4, no re-encoding.
     // width/height are remembered here since VideoRecorder needs them for its track
@@ -71,6 +81,28 @@ class VideoReceiver {
     /** [secret] is the PairingSecret from the vehicle's QR code (see SignedFrame/
      * PairingSecret) - fragments that don't carry a valid tag for it are dropped
      * before ever reaching handlePacket(), same as one that never arrived. */
+    /** True once start() has actually configured a decoder - lets a caller tell
+     * "already running, just needs its display surface reattached" apart from
+     * "never started, needs a real start()" without keeping its own duplicate
+     * bookkeeping. See updateOutputSurface()'s doc for the case this exists for. */
+    val isRunning: Boolean get() = decoder != null
+
+    /**
+     * Re-points an already-running decoder at a new display Surface without
+     * touching the socket/receive loop/recording at all - for ControllerDriveActivity's
+     * benefit: when a recording is in progress, backgrounding no longer stops this
+     * receiver (see its onPause() doc - recording depends on the receive loop
+     * staying alive, not on decode/display), but the TextureView's own Surface can
+     * still be destroyed and recreated with a different SurfaceTexture across that
+     * same background/foreground cycle. Calling start() again to pick up the new
+     * one would pointlessly tear down and reopen the socket, momentarily
+     * interrupting the very recording this whole path exists to protect - this
+     * just swaps what the decoder renders to. No-op if nothing's running yet.
+     */
+    fun updateOutputSurface(newSurface: Surface) {
+        decoder?.setOutputSurface(newSurface)
+    }
+
     fun start(port: Int, outputSurface: Surface, secret: ByteArray, width: Int = 640, height: Int = 480) {
         videoWidth = width
         videoHeight = height
@@ -89,6 +121,7 @@ class VideoReceiver {
             while (isActive) {
                 try {
                     sock.receive(packet)
+                    totalBytesReceived += packet.length
                     val verified = SignedFrame.verify(packet.data, packet.length, secret) ?: continue
                     handlePacket(verified)
                 } catch (e: Exception) {

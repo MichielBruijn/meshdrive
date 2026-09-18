@@ -4,6 +4,7 @@
     <string name="mode_controller">Controller</string>
     <string name="mode_vehicle">Vehicle</string>
     <string name="main_debug_mode">Debug mode (addresses, logs, FPS/latency, wifi fallback, Safe steering, video quality, GPS/speed)</string>
+    <string name="main_debug_file_logging">Debug logging (save log to file on this phone)</string>
     <string name="vehicle_debug_title">ESP32 connection</string>
     <string name="vehicle_notification_text">Waiting for control input…</string>
     <string name="vehicle_connect_usb">Connect via USB cable</string>
@@ -39,6 +40,7 @@
     <string name="controller_unmute">Unmute</string>
     <string name="controller_record">Record</string>
     <string name="controller_recording">Stop recording</string>
+    <string name="controller_quality_ultra_low">ULow</string>
     <string name="controller_quality_low">Low</string>
     <string name="controller_quality_medium">Med</string>
     <string name="controller_quality_high">High</string>

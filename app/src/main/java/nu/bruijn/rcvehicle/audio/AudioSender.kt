@@ -55,6 +55,11 @@ class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) 
     private var seq = 0
     private var audioThread: HandlerThread? = null
     private val lock = Any()
+
+    /** See VideoReceiver.isRunning's doc - same purpose (VehicleForegroundService
+     * telling "already sending" apart from "needs a real start()", for
+     * VideoQuality.ULOW's audio-drop/restore). */
+    val isRunning: Boolean get() = socket != null
     private var stopped = true
 
     var onError: ((String) -> Unit)? = null
@@ -68,6 +73,13 @@ class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) 
      * vehicle). */
     fun retarget(remoteHost: String) {
         remoteAddress = InetAddress.getByName(remoteHost)
+    }
+
+    /** Replaces just the UDP socket - see VideoSender.refreshSocket()'s doc,
+     * same reasoning and same fix for the same underlying-VPN-churn bug. */
+    fun refreshSocket() {
+        socket?.close()
+        socket = DatagramSocket()
     }
 
     fun start(remoteHost: String, remotePort: Int, secret: ByteArray) {

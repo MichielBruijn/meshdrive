@@ -40,6 +40,9 @@ class AudioReceiver {
      * know audio is actually flowing before deciding to gate a recording's video
      * track on it (MuxerSession.expectAudio) - see that class's doc for why. */
     @Volatile var hasReceivedAudio = false
+
+    /** See VideoReceiver.totalBytesReceived's doc - same purpose. */
+    @Volatile var totalBytesReceived: Long = 0
         private set
 
     /** Silences live playback only - decoding and (if a recording is active) the
@@ -56,6 +59,10 @@ class AudioReceiver {
 
     /** True if anything was actually recorded. */
     fun stopRecording(): Boolean = recorder?.stop().also { recorder = null } ?: false
+
+    /** See VideoReceiver.isRunning's doc - same purpose (ControllerDriveActivity
+     * telling "already running, leave it" apart from "needs a real start()"). */
+    val isRunning: Boolean get() = socket != null
 
     /** [secret] is the PairingSecret from the vehicle's QR code (see SignedFrame/
      * PairingSecret) - packets that don't carry a valid tag for it are dropped
@@ -91,6 +98,7 @@ class AudioReceiver {
             while (isActive) {
                 try {
                     sock.receive(packet)
+                    totalBytesReceived += packet.length
                     val verified = SignedFrame.verify(packet.data, packet.length, secret) ?: continue
                     handlePacket(verified)
                 } catch (e: Exception) {

@@ -120,6 +120,16 @@ class YggdrasilVpnService : VpnService() {
         val runningAddress: String? get() = instance?.addressString
         val activePeer: String? get() = instance?.activePeerUri
         val peerStatuses: List<PeerLatencyProbe.Status> get() = instance?.latestStatuses ?: emptyList()
+
+        /** Timestamp of the most recent successful connectMesh() - changes on
+         * every reconnect, not just the first one (a session dying and being
+         * re-established after e.g. another app grabbing the OS VPN slot bumps
+         * it too). Callers holding UDP sockets opened against the previous
+         * session's routing (VideoSender/AudioSender/ControlLink) use a change
+         * here as the signal to refresh them - see VideoSender.refreshSocket()'s
+         * doc for why the session itself reporting "connected" again isn't
+         * enough on its own. 0L if never connected yet. */
+        val lastConnectAtMs: Long get() = instance?.lastConnectAtMs ?: 0L
     }
 
     private val yggdrasil = Yggdrasil()

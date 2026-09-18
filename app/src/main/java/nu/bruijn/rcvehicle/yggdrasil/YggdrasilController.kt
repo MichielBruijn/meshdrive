@@ -34,12 +34,20 @@ object YggdrasilController {
     }
 
     /** Null until the node has actually come up and negotiated an address - poll
-     * this rather than assuming [start] returning means it's ready. */
-    fun address(): String? = YggdrasilVpnService.runningAddress
+     * this rather than assuming [start] returning means it's ready. Falls back
+     * to [ExternalYggdrasilDetector] so this still resolves when MainActivity
+     * deliberately skipped [start] because some other app (the standalone
+     * Yggdrasil app, most likely) already provides mesh connectivity. */
+    fun address(): String? = YggdrasilVpnService.runningAddress ?: ExternalYggdrasilDetector.currentAddress()
 
     /** The one candidate the mesh is currently actually connected through, or
      * null if none is (yet). */
     fun activePeer(): String? = YggdrasilVpnService.activePeer
+
+    /** See YggdrasilVpnService.lastConnectAtMs's doc - a "session epoch" for
+     * detecting a reconnect (not just the initial connect) that stale sockets
+     * opened against the previous session need to react to. */
+    fun lastConnectAtMs(): Long = YggdrasilVpnService.lastConnectAtMs
 
     /** Latest latency-probe results across the whole candidate pool, refreshed
      * on PeerMonitor's own cadence - not re-measured on demand by calling this. */

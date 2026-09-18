@@ -85,6 +85,11 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
         modePrefs = ModePrefs(applicationContext)
+        // One-time upgrade from pre-vehicleId app versions - see its own doc.
+        // Run here, unconditionally on every launch (cheap/no-op past the
+        // first), so it's always done before ControllerActivity (the only
+        // reader of this data) could possibly run.
+        lifecycleScope.launch { modePrefs.migrateToVehicleIdKeysIfNeeded() }
 
         // "demo" flavor only - see the expiry check above for why this can't
         // be a subtle footnote: whoever's evaluating this build needs to know
@@ -129,12 +134,14 @@ class MainActivity : AppCompatActivity() {
         setUpAppUpdateCheck(versionName ?: "0")
 
         val checkDebugMode = findViewById<CheckBox>(R.id.checkDebugMode)
+        val checkDebugFileLogging = findViewById<CheckBox>(R.id.checkDebugFileLogging)
         val editYggdrasilPeers = findViewById<EditText>(R.id.editYggdrasilPeers)
         val buttonSaveYggdrasilPeers = findViewById<Button>(R.id.buttonSaveYggdrasilPeers)
 
         fun setDebugSectionVisible(visible: Boolean) {
             val v = if (visible) View.VISIBLE else View.GONE
             checkDebugMode.visibility = v
+            checkDebugFileLogging.visibility = v
             editYggdrasilPeers.visibility = v
             buttonSaveYggdrasilPeers.visibility = v
         }
@@ -146,9 +153,22 @@ class MainActivity : AppCompatActivity() {
             checkDebugMode.isChecked = debugEnabled
             if (debugEnabled) setDebugSectionVisible(true)
             editYggdrasilPeers.setText(modePrefs.yggdrasilPeers.first().joinToString(", "))
+            val fileLoggingEnabled = modePrefs.debugFileLoggingEnabled.first()
+            checkDebugFileLogging.isChecked = fileLoggingEnabled
+            // One of DebugFileLogger's several start() call sites - see its own
+            // doc for why more than one exists.
+            if (fileLoggingEnabled) nu.bruijn.rcvehicle.common.DebugFileLogger.start(applicationContext)
         }
         checkDebugMode.setOnCheckedChangeListener { _, checked ->
             lifecycleScope.launch { modePrefs.setDebugEnabled(checked) }
+        }
+        checkDebugFileLogging.setOnCheckedChangeListener { _, checked ->
+            lifecycleScope.launch { modePrefs.setDebugFileLoggingEnabled(checked) }
+            if (checked) {
+                nu.bruijn.rcvehicle.common.DebugFileLogger.start(applicationContext)
+            } else {
+                nu.bruijn.rcvehicle.common.DebugFileLogger.stop()
+            }
         }
         buttonSaveYggdrasilPeers.setOnClickListener {
             val peers = editYggdrasilPeers.text.toString().split(",").map { it.trim() }.filter { it.isNotEmpty() }
@@ -193,6 +213,21 @@ class MainActivity : AppCompatActivity() {
     private fun proceedWithMode(mode: AppMode) {
         lifecycleScope.launch {
             modePrefs.setMode(mode)
+            // Some other app (the standalone Yggdrasil app, most likely) may
+            // already have the OS VPN slot and be routing 200::/7. Checking
+            // this only has to happen here, before ever calling prepareIntent()
+            // - confirmed live as a real bug: merely completing
+            // VpnService.prepare()'s consent handshake for OUR package evicts
+            // whoever currently holds the VPN slot as an OS-level side effect,
+            // even if start() is never subsequently called. A check placed
+            // after prepare()/consent (where it used to live) was already too
+            // late - the other app's session was gone by then regardless.
+            val externalAddress = nu.bruijn.rcvehicle.yggdrasil.ExternalYggdrasilDetector.currentAddress()
+            android.util.Log.d("RCDebug", "external Yggdrasil check before mode start: $externalAddress")
+            if (externalAddress != null) {
+                launchModeActivity(mode)
+                return@launch
+            }
             val consent = YggdrasilController.prepareIntent(this@MainActivity)
             if (consent != null) {
                 pendingMode = mode
