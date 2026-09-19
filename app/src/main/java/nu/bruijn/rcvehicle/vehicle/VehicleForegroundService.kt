@@ -561,6 +561,36 @@ class VehicleForegroundService : Service() {
         startListening()
         startNetworkChurnWatch()
         startControllerIdleWatch()
+
+        // Was VehicleActivity-only (a dynamic receiver registered in its onCreate())
+        // until this - confirmed on real hardware as a real gap: unplugging/replugging
+        // the USB-OTG cable while that screen wasn't the foreground Activity (screen
+        // locked/timed out, which this service is explicitly designed to allow - see
+        // its own class doc - or the driver just on a different screen) did nothing at
+        // all, silently leaving UsbServoBridge on whatever channel mapping (possibly
+        // still the constructor's placeholder defaults, if the very first connect
+        // attempt raced GETJOYCHANNELS) it last resolved. Living here instead means a
+        // reconnect always re-queries the board's actual configured channels - see
+        // ServoLink.readyToSend's doc - regardless of which screen, if any, is in
+        // front.
+        ContextCompat.registerReceiver(
+            this,
+            usbAttachReceiver,
+            android.content.IntentFilter().apply {
+                addAction(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED)
+                addAction(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED)
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+    }
+
+    private val usbAttachReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED -> connectUsb()
+                android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED -> usbServoBridge.stop()
+            }
+        }
     }
 
     // Android 14+ requires actually HOLDING the runtime permission matching each
@@ -644,7 +674,28 @@ class VehicleForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
+    /**
+     * Per direct request: swiping this app away in the Recents/overview screen
+     * should be a real, deliberate way to stop the vehicle session - not just
+     * Force Stop buried in system Settings. Without this override, Android's
+     * default for a startForegroundService()-started service (not just bound)
+     * is to keep running regardless - which is what was happening before this
+     * existed, confirmed live: nobody had ever explicitly decided that either
+     * way, it was just the unaddressed default.
+     *
+     * Trade-off, stated plainly rather than silently traded away: this also
+     * means an ACCIDENTAL swipe - someone else picks up the mounted phone, a
+     * system-triggered recents cleanup - now stops the vehicle too, possibly
+     * mid-drive. There's no way from here to tell "the user meant this" apart
+     * from "this just happened".
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
+        runCatching { unregisterReceiver(usbAttachReceiver) }
         servoBridge.stop()
         usbServoBridge.stop()
         controlLink.close()

@@ -42,6 +42,20 @@ abstract class ServoLink(
 
     var onStateChange: ((String) -> Unit)? = null
 
+    // Stays true for ServoBridge (wifi path - never touches this, no async
+    // channel query exists there). UsbServoBridge sets this false right after
+    // connecting and back to true once checkJoystickChannels()'s USB round-trip
+    // resolves (steer/throttle found or confirmed unknown) - closes a real race
+    // confirmed on hardware: sendControl() could fire on the constructor's
+    // placeholder channels (3/4) before setChannels() overwrote them with the
+    // board's actual configured channels, since a remote controller can already
+    // be sending control frames the moment onConnected(true) fires, well before
+    // the ~1s GETJOYCHANNELS reply lands. Symptom matched exactly: throttle
+    // worked immediately (its placeholder happened to match this board's real
+    // channel), steering didn't (its placeholder didn't) - and it self-corrected
+    // within about a second once the reply arrived.
+    protected var readyToSend = true
+
     /** Overrides the channel mapping after construction - used once
      * UsbServoBridge has queried the board's own configured Joystick X/Y
      * channels (see its checkJoystickChannels()), so this app drives whichever
@@ -86,6 +100,7 @@ abstract class ServoLink(
 
     /** steer/throttle normalized to -1.0..1.0. */
     fun sendControl(steer: Float, throttle: Float) {
+        if (!readyToSend) return
         lastControlAtMs = System.currentTimeMillis()
         send(steerChannel, toUs(steer, steerCenterUs, steerMinUs, steerMaxUs))
         send(throttleChannel, toUs(throttle, throttleCenterUs, throttleMinUs, throttleMaxUs))

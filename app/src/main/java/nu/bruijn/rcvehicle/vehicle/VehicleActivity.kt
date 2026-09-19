@@ -121,25 +121,6 @@ class VehicleActivity : AppCompatActivity() {
         }
     }
 
-    // Catches the ESP32 being plugged in WHILE already on this screen (the manifest's
-    // USB_DEVICE_ATTACHED filter only launches a fresh MainActivity, which doesn't
-    // help if VehicleActivity is already in front) - and, just as importantly, being
-    // unplugged. Confirmed on real hardware as a real gap: nothing previously
-    // listened for DETACHED at all, so pulling the cable left port non-null and the
-    // "Connected" UI stuck showing green while writes silently failed one by one,
-    // instead of the app immediately reflecting reality and going quiet. Stopping
-    // here (rather than waiting for the next reconnect attempt to notice) is what
-    // makes the eventual reconnect clean instead of resuming into whatever half-
-    // torn-down state a stale port was left in.
-    private val usbAttachReceiver = object : android.content.BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            when (intent.action) {
-                android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED -> service?.connectUsb()
-                android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED -> service?.usbServoBridge?.stop()
-            }
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Deliberately NOT forcing the screen to stay on (FLAG_KEEP_SCREEN_ON) here
@@ -156,16 +137,6 @@ class VehicleActivity : AppCompatActivity() {
         // mic access alive, plus a wake lock so the CPU doesn't doze in the
         // meantime.
         setContentView(R.layout.activity_vehicle)
-
-        ContextCompat.registerReceiver(
-            this,
-            usbAttachReceiver,
-            android.content.IntentFilter().apply {
-                addAction(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED)
-                addAction(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED)
-            },
-            ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
 
         // Debug mode (MainActivity's checkbox) hides raw addresses/logs/the local debug
         // sliders/the wifi fallback - none of that is needed for normal day-to-day driving,
@@ -519,7 +490,6 @@ class VehicleActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        runCatching { unregisterReceiver(usbAttachReceiver) }
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
         // Deliberately NOT touching controlLink/videoSender/audioSender/
         // controllerVoiceReceiver here - they're VehicleForegroundService's now,

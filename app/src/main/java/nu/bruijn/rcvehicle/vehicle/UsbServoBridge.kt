@@ -51,6 +51,22 @@ class UsbServoBridge(
     private var readJob: Job? = null
     private val lineBuffer = StringBuilder()
 
+    // Bumped by every stop() (so also by start()'s own leading stop()) - lets
+    // openPort()'s checkJoystickChannels/checkCalibration chain tell whether it's
+    // still the current connection attempt before touching setChannels()/
+    // setCalibration()/readyToSend/onLineReceived. Needed since VehicleForegroundService
+    // now has two paths that can both call connectUsb() close together on a cold
+    // start (its own USB_DEVICE_ATTACHED receiver, and VehicleActivity's
+    // onServiceConnected) - confirmed on real hardware as a real bug: the older of
+    // two overlapping start() calls closes the port the newer one just opened
+    // (or vice versa), and each one's query used to blindly install itself as
+    // onLineReceived and restore whatever it last saw as "previous" in finally -
+    // two interleaved GETJOYCHANNELS/GETCALIBRATION round-trips on the same port
+    // could each grab the other's reply, resolving one channel correctly and
+    // leaving the other on its placeholder default (matching the "only one servo
+    // moves" symptom exactly).
+    private val connectionGeneration = java.util.concurrent.atomic.AtomicInteger(0)
+
     /**
      * Fires for each newline-terminated line the board sends back - normal
      * operation never uses this (the servo link is send-only), but
@@ -120,6 +136,12 @@ class UsbServoBridge(
     }
 
     private fun openPort(manager: UsbManager, driver: UsbSerialDriver) {
+        // Captured AFTER start()'s leading stop() already bumped this - see
+        // connectionGeneration's doc. Any of the three checks below finding it's
+        // since moved on means a newer start()/stop() has taken over; bail out
+        // without touching setChannels()/setCalibration()/readyToSend/
+        // onLineReceived; that newer attempt owns all of those now.
+        val myGeneration = connectionGeneration.get()
         val connection = manager.openDevice(driver.device)
         if (connection == null) {
             onStateChange?.invoke("failed to open USB device")
@@ -130,11 +152,21 @@ class UsbServoBridge(
         try {
             serialPort.open(connection)
             serialPort.setParameters(115_200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
+            if (connectionGeneration.get() != myGeneration) {
+                runCatching { serialPort.close() }
+                return
+            }
             port = serialPort
             onStateChange?.invoke("USB serial connected")
             onConnected?.invoke(true)
             startWatchdog()
+            // Held false until both queries below resolve (found or confirmed
+            // unknown) - see readyToSend's doc in ServoLink for why sendControl()
+            // must not fire on the constructor's placeholder channels/calibration
+            // while these round-trips are still in flight.
+            readyToSend = false
             checkJoystickChannels { steer, throttle ->
+                if (connectionGeneration.get() != myGeneration) return@checkJoystickChannels
                 if (steer != null && throttle != null) {
                     setChannels(steer, throttle)
                     onStateChange?.invoke("using board's channels: steer=CH${steer + 1} throttle=CH${throttle + 1}")
@@ -143,6 +175,7 @@ class UsbServoBridge(
                 // or no reply in time - the constructor defaults stay in effect,
                 // same as before this existed.
                 checkCalibration { calibration ->
+                    if (connectionGeneration.get() != myGeneration) return@checkCalibration
                     if (calibration != null) {
                         val (steerMin, steerCenter, steerMax, throttleMin, throttleCenter, throttleMax) = calibration
                         setCalibration(steerMin, steerCenter, steerMax, throttleMin, throttleCenter, throttleMax)
@@ -150,6 +183,7 @@ class UsbServoBridge(
                     }
                     // null means an older firmware that doesn't know GETCALIBRATION,
                     // or no reply in time - the generic 1000/1500/2000 default stays.
+                    readyToSend = true
                 }
             }
         } catch (e: Exception) {
@@ -283,27 +317,41 @@ class UsbServoBridge(
         }
         scope.launch {
             val previousHandler = onLineReceived
-            val result = CompletableDeferred<Pair<Int, Int>?>()
-            onLineReceived = { line ->
-                if (line.startsWith("JOYCHANNELS=")) {
-                    val parts = line.removePrefix("JOYCHANNELS=").split(",")
-                    result.complete(
-                        if (parts.size == 2) {
-                            val steer = parts[0].toIntOrNull()
-                            val throttle = parts[1].toIntOrNull()
-                            if (steer != null && throttle != null) steer to throttle else null
-                        } else {
-                            null
-                        },
-                    )
-                } else {
-                    previousHandler?.invoke(line)
-                }
-            }
             startReading()
             try {
-                synchronized(writeLock) { p.write("GETJOYCHANNELS\n".toByteArray(), 200) }
-                val channels = withTimeoutOrNull(3000) { result.await() }
+                // Up to 3 attempts, not 1 - confirmed on real hardware as a real gap:
+                // a single 3s shot right after openPort() was unreliable specifically
+                // on a COLD connect (app launched with the board already plugged in -
+                // USB enumeration/CP2102 driver bring-up still settling), while a WARM
+                // reconnect (unplug/replug into an already-running app) consistently
+                // got a reply well within 3s. A failed attempt here silently left
+                // BOTH steerChannel/throttleChannel on this class's constructor
+                // placeholder defaults - matching the reported symptom exactly (one
+                // axis happening to still move something, since its placeholder
+                // coincided with a wired connector, the other not).
+                var channels: Pair<Int, Int>? = null
+                for (attempt in 1..3) {
+                    val result = CompletableDeferred<Pair<Int, Int>?>()
+                    onLineReceived = { line ->
+                        if (line.startsWith("JOYCHANNELS=")) {
+                            val parts = line.removePrefix("JOYCHANNELS=").split(",")
+                            result.complete(
+                                if (parts.size == 2) {
+                                    val steer = parts[0].toIntOrNull()
+                                    val throttle = parts[1].toIntOrNull()
+                                    if (steer != null && throttle != null) steer to throttle else null
+                                } else {
+                                    null
+                                },
+                            )
+                        } else {
+                            previousHandler?.invoke(line)
+                        }
+                    }
+                    synchronized(writeLock) { p.write("GETJOYCHANNELS\n".toByteArray(), 200) }
+                    channels = withTimeoutOrNull(1500) { result.await() }
+                    if (channels != null) break
+                }
                 onResult(channels?.first, channels?.second)
             } catch (_: Exception) {
                 onResult(null, null)
@@ -339,19 +387,25 @@ class UsbServoBridge(
         }
         scope.launch {
             val previousHandler = onLineReceived
-            val result = CompletableDeferred<Calibration?>()
-            onLineReceived = { line ->
-                if (line.startsWith("CALIBRATION=")) {
-                    val parts = line.removePrefix("CALIBRATION=").split(",").mapNotNull { it.toIntOrNull() }
-                    result.complete(if (parts.size == 6) Calibration(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]) else null)
-                } else {
-                    previousHandler?.invoke(line)
-                }
-            }
             startReading()
             try {
-                synchronized(writeLock) { p.write("GETCALIBRATION\n".toByteArray(), 200) }
-                onResult(withTimeoutOrNull(3000) { result.await() })
+                // Same retry reasoning as checkJoystickChannels() above.
+                var calibration: Calibration? = null
+                for (attempt in 1..3) {
+                    val result = CompletableDeferred<Calibration?>()
+                    onLineReceived = { line ->
+                        if (line.startsWith("CALIBRATION=")) {
+                            val parts = line.removePrefix("CALIBRATION=").split(",").mapNotNull { it.toIntOrNull() }
+                            result.complete(if (parts.size == 6) Calibration(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]) else null)
+                        } else {
+                            previousHandler?.invoke(line)
+                        }
+                    }
+                    synchronized(writeLock) { p.write("GETCALIBRATION\n".toByteArray(), 200) }
+                    calibration = withTimeoutOrNull(1500) { result.await() }
+                    if (calibration != null) break
+                }
+                onResult(calibration)
             } catch (_: Exception) {
                 onResult(null)
             } finally {
@@ -442,6 +496,7 @@ class UsbServoBridge(
     }
 
     override fun stop() {
+        connectionGeneration.incrementAndGet()
         super.stop()
         readJob?.cancel()
         readJob = null
