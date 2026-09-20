@@ -42,10 +42,19 @@ class ModePrefs(private val context: Context) {
         val DEBUG_ENABLED = booleanPreferencesKey("debug_enabled")
         val DEBUG_FILE_LOGGING_ENABLED = booleanPreferencesKey("debug_file_logging_enabled")
         val AUTO_QUALITY = booleanPreferencesKey("auto_quality_enabled")
+        val LAST_VIDEO_QUALITY = intPreferencesKey("last_video_quality")
         val SAFE_STEERING_ENABLED = booleanPreferencesKey("safe_steering_enabled")
         val SAFE_STEERING_MAX_SPEED_KMH = intPreferencesKey("safe_steering_max_speed_kmh")
         val SAFE_STEERING_REDUCTION_PERCENT = intPreferencesKey("safe_steering_reduction_percent")
         val TELEMETRY_ENABLED = booleanPreferencesKey("telemetry_enabled")
+        val BOARD_STEER_CHANNEL = intPreferencesKey("board_steer_channel")
+        val BOARD_THROTTLE_CHANNEL = intPreferencesKey("board_throttle_channel")
+        val BOARD_STEER_MIN_US = intPreferencesKey("board_steer_min_us")
+        val BOARD_STEER_CENTER_US = intPreferencesKey("board_steer_center_us")
+        val BOARD_STEER_MAX_US = intPreferencesKey("board_steer_max_us")
+        val BOARD_THROTTLE_MIN_US = intPreferencesKey("board_throttle_min_us")
+        val BOARD_THROTTLE_CENTER_US = intPreferencesKey("board_throttle_center_us")
+        val BOARD_THROTTLE_MAX_US = intPreferencesKey("board_throttle_max_us")
         val YGGDRASIL_PEERS = stringPreferencesKey("yggdrasil_peers")
         val VEHICLE_SECRETS = stringPreferencesKey("vehicle_secrets")
         val VEHICLE_ADDRESSES = stringPreferencesKey("vehicle_addresses")
@@ -315,6 +324,21 @@ class ModePrefs(private val context: Context) {
         context.dataStore.edit { it[Keys.AUTO_QUALITY] = enabled }
     }
 
+    /**
+     * The last manually-picked (or auto-quality-settled-on) VideoQuality ordinal -
+     * per direct request ("als het naar LOW is gegaan, volgende keer ook LOW"), so
+     * a fresh connection starts at whatever quality was actually in use last time
+     * instead of always defaulting back to Low. Default 1 is VideoQuality.LOW's own
+     * ordinal (kept as a raw Int here rather than importing the video package, same
+     * reasoning as this file's other plain-value prefs) - matches the pre-existing
+     * "Low, not Auto, is the real default" choice documented on autoQualityEnabled
+     * above for a fresh install/never-saved vehicle.
+     */
+    val lastVideoQuality: Flow<Int> = context.dataStore.data.map { it[Keys.LAST_VIDEO_QUALITY] ?: 1 }
+    suspend fun setLastVideoQuality(ordinal: Int) {
+        context.dataStore.edit { it[Keys.LAST_VIDEO_QUALITY] = ordinal }
+    }
+
     val safeSteeringEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.SAFE_STEERING_ENABLED] ?: false }
     suspend fun setSafeSteeringEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.SAFE_STEERING_ENABLED] = enabled }
@@ -333,6 +357,68 @@ class ModePrefs(private val context: Context) {
     val telemetryEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.TELEMETRY_ENABLED] ?: true }
     suspend fun setTelemetryEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.TELEMETRY_ENABLED] = enabled }
+    }
+
+    /**
+     * The ESP32's own configured Joystick X/Y channels and steer/throttle µs
+     * calibration, as last discovered over USB (UsbServoBridge.checkJoystickChannels()/
+     * checkCalibration()) - persisted (not just held in the live instance) and
+     * shared with ServoBridge (the wifi fallback), which has no way to query
+     * this itself: the firmware only answers GETJOYCHANNELS/GETCALIBRATION on
+     * the serial line, nothing equivalent exists over HTTP/websocket. Per direct
+     * request, confirmed on real hardware as a real bug - without this, wifi
+     * fallback silently drove ServoLink's generic constructor defaults (steer=3/
+     * throttle=4, 1000/1500/2000µs), which on this specific board are simply
+     * wrong (real steer=0, throttle=3) - only one slider visibly did anything,
+     * and on the wrong physical connector. Defaults here match those same
+     * generic constructor values, so a board that's never been resolved over
+     * USB yet behaves exactly as before this existed.
+     */
+    data class BoardChannels(val steer: Int, val throttle: Int)
+    val boardChannels: Flow<BoardChannels> = context.dataStore.data.map {
+        BoardChannels(it[Keys.BOARD_STEER_CHANNEL] ?: 3, it[Keys.BOARD_THROTTLE_CHANNEL] ?: 4)
+    }
+    suspend fun setBoardChannels(steer: Int, throttle: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.BOARD_STEER_CHANNEL] = steer
+            prefs[Keys.BOARD_THROTTLE_CHANNEL] = throttle
+        }
+    }
+
+    data class BoardCalibration(
+        val steerMin: Int,
+        val steerCenter: Int,
+        val steerMax: Int,
+        val throttleMin: Int,
+        val throttleCenter: Int,
+        val throttleMax: Int,
+    )
+    val boardCalibration: Flow<BoardCalibration> = context.dataStore.data.map {
+        BoardCalibration(
+            it[Keys.BOARD_STEER_MIN_US] ?: 1000,
+            it[Keys.BOARD_STEER_CENTER_US] ?: 1500,
+            it[Keys.BOARD_STEER_MAX_US] ?: 2000,
+            it[Keys.BOARD_THROTTLE_MIN_US] ?: 1000,
+            it[Keys.BOARD_THROTTLE_CENTER_US] ?: 1500,
+            it[Keys.BOARD_THROTTLE_MAX_US] ?: 2000,
+        )
+    }
+    suspend fun setBoardCalibration(
+        steerMin: Int,
+        steerCenter: Int,
+        steerMax: Int,
+        throttleMin: Int,
+        throttleCenter: Int,
+        throttleMax: Int,
+    ) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.BOARD_STEER_MIN_US] = steerMin
+            prefs[Keys.BOARD_STEER_CENTER_US] = steerCenter
+            prefs[Keys.BOARD_STEER_MAX_US] = steerMax
+            prefs[Keys.BOARD_THROTTLE_MIN_US] = throttleMin
+            prefs[Keys.BOARD_THROTTLE_CENTER_US] = throttleCenter
+            prefs[Keys.BOARD_THROTTLE_MAX_US] = throttleMax
+        }
     }
 
     /**

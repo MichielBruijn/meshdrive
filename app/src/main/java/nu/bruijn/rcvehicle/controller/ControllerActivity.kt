@@ -3,7 +3,10 @@ package nu.bruijn.rcvehicle.controller
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
+import android.text.SpannableString
+import android.text.Spanned
 import android.text.TextUtils
+import android.text.style.ForegroundColorSpan
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -147,18 +150,34 @@ class ControllerActivity : AppCompatActivity() {
      * address keeps being tried first and a stale one sinks to the back rather
      * than being retried every time. Returns the answering address, or the
      * first (most-recently-working) one if none answered within the probe. */
+    /** Probes every one of [addresses] in parallel, individually - each address
+     * this vehicleId has been seen at (embedded Yggdrasil vs. the standalone app,
+     * see ModePrefs.addressesForVehicle's doc) can be independently up or down,
+     * e.g. only one of the two Yggdrasil instances actually running right now -
+     * callers that only need "is ANY of them reachable" can just check
+     * `.any { it.second }` on the result rather than this collapsing to one
+     * boolean itself. */
+    private suspend fun probeAllAddresses(
+        addresses: List<String>,
+        secret: ByteArray,
+        attempts: Int = 3,
+        timeoutMs: Int = 1200,
+    ): List<Pair<String, Boolean>> = coroutineScope {
+        addresses.map { address ->
+            async { address to ControlLink.probeOnline(address, secret, attempts = attempts, timeoutMs = timeoutMs) }
+        }.awaitAll()
+    }
+
     private suspend fun probeAndPickAddress(
         vehicleId: String,
         addresses: List<String>,
         secret: ByteArray,
         attempts: Int = 3,
         timeoutMs: Int = 1200,
-    ): Pair<String, Boolean> = coroutineScope {
-        val results = addresses.map { address ->
-            async { address to ControlLink.probeOnline(address, secret, attempts = attempts, timeoutMs = timeoutMs) }
-        }.awaitAll()
+    ): Pair<String, Boolean> {
+        val results = probeAllAddresses(addresses, secret, attempts, timeoutMs)
         val reachable = results.firstOrNull { it.second }
-        if (reachable != null) {
+        return if (reachable != null) {
             modePrefs.markAddressReachable(vehicleId, reachable.first)
             reachable.first to true
         } else {
@@ -174,16 +193,27 @@ class ControllerActivity : AppCompatActivity() {
     private fun addVehicleRow(vehicleId: String, container: LinearLayout) {
         fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
+        // Shared by the dot and the name/address text below - per direct request,
+        // "online" should color both, not just the dot.
+        val onlineColor = Color.parseColor("#4CAF50")
+        val offlineColor = Color.parseColor("#9E9E9E")
+
         val dot = TextView(this).apply {
             text = "●"
-            setTextColor(Color.parseColor("#9E9E9E")) // unknown yet, until the probe below resolves
+            setTextColor(offlineColor) // unknown yet, until the probe below resolves
             textSize = 16f
             setPadding(0, 0, dp(12), 0)
         }
         val addressText = TextView(this).apply {
             text = vehicleId // placeholder until the name below resolves
-            ellipsize = TextUtils.TruncateAt.MIDDLE
-            maxLines = 1
+            setTextColor(offlineColor) // unknown yet, until the probe below resolves
+            // No ellipsize/maxLines set here on purpose - TextView.setEllipsize(MIDDLE
+            // or START) forces setHorizontallyScrolling(true) internally, and setting
+            // ellipsize back to null later does NOT undo that (a known TextView quirk) -
+            // confirmed on real hardware as a real bug: the debug-mode multi-line
+            // address list below stayed stuck on a single scrolling line because this
+            // block used to set MIDDLE ellipsize unconditionally right here. Each
+            // branch below sets its own mode from scratch instead.
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         // Also used by the remove-confirmation dialog below, so it can name the
@@ -199,7 +229,25 @@ class ControllerActivity : AppCompatActivity() {
             // debug mode.
             val debugEnabled = modePrefs.debugEnabled.first()
             val addresses = modePrefs.addressesForVehicle(vehicleId)
-            addressText.text = if (debugEnabled) "$name (${addresses.joinToString(", ")})" else name
+            if (debugEnabled) {
+                // One address per line under the name (even for a single address,
+                // per direct request - a consistent layout beats a shorter line
+                // that only sometimes wraps) - reachable via either the embedded
+                // Yggdrasil or the standalone app, see ModePrefs.addressesForVehicle's
+                // doc for why there can be more than one. No ellipsize (default
+                // null) - see addressText's own construction doc for why that's
+                // required for multi-line to actually take effect here. No maxLines
+                // cap either - confirmed on real hardware as a real bug: a fixed
+                // "1 + addresses.size" assumes one VISUAL line per logical line,
+                // but a full IPv6 address doesn't fit on one line in portrait's
+                // narrower width, so it wraps and eats into that budget before the
+                // later addresses ever get a line to render on.
+                addressText.text = (listOf(name) + addresses).joinToString("\n")
+            } else {
+                addressText.ellipsize = TextUtils.TruncateAt.MIDDLE
+                addressText.maxLines = 1
+                addressText.text = name
+            }
         }
         val removeButton = TextView(this).apply {
             text = "✕"
@@ -247,17 +295,45 @@ class ControllerActivity : AppCompatActivity() {
             // the vehicle rather than answered.
             val secret = modePrefs.secretForVehicle(vehicleId)
             if (secret == null) {
-                dot.setTextColor(Color.parseColor("#9E9E9E"))
+                dot.setTextColor(offlineColor)
+                addressText.setTextColor(offlineColor)
                 dot.contentDescription = getString(R.string.controller_vehicle_offline)
                 return@launch
             }
             while (isActive) {
                 val addresses = modePrefs.addressesForVehicle(vehicleId)
-                val (_, online) = if (addresses.isEmpty()) "" to false else probeAndPickAddress(vehicleId, addresses, secret)
-                dot.setTextColor(if (online) Color.parseColor("#4CAF50") else Color.parseColor("#9E9E9E"))
+                val results = if (addresses.isEmpty()) emptyList() else probeAllAddresses(addresses, secret)
+                results.firstOrNull { it.second }?.let { (address, _) -> modePrefs.markAddressReachable(vehicleId, address) }
+                val online = results.any { it.second }
+                dot.setTextColor(if (online) onlineColor else offlineColor)
                 dot.contentDescription = getString(
                     if (online) R.string.controller_vehicle_online else R.string.controller_vehicle_offline
                 )
+                // Per direct request - each address line reflects ITS OWN
+                // reachability (only one of embedded-Yggdrasil-vs-standalone-app
+                // is typically actually up at a time, see probeAllAddresses' doc),
+                // not just whether the vehicle is reachable at all via some
+                // address. The name line (debug mode's first line, or the whole
+                // text outside debug mode) follows the overall online status.
+                if (modePrefs.debugEnabled.first() && addresses.isNotEmpty()) {
+                    // Reset in case a previous cycle (before debug mode got toggled
+                    // on, mid-screen) left the MIDDLE-ellipsize quirk active - see
+                    // addressText's construction doc.
+                    addressText.ellipsize = null
+                    val lines = listOf(resolvedName) + addresses
+                    val text = lines.joinToString("\n")
+                    val spannable = SpannableString(text)
+                    var start = 0
+                    lines.forEachIndexed { i, line ->
+                        val end = start + line.length
+                        val lineColor = if (i == 0) (if (online) onlineColor else offlineColor) else (if (results.getOrNull(i - 1)?.second == true) onlineColor else offlineColor)
+                        spannable.setSpan(ForegroundColorSpan(lineColor), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        start = end + 1 // +1 for the '\n'
+                    }
+                    addressText.text = spannable
+                } else {
+                    addressText.setTextColor(if (online) onlineColor else offlineColor)
+                }
                 delay(3_000L)
             }
         }

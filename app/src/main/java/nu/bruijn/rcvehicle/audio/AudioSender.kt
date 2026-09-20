@@ -6,6 +6,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -47,6 +48,7 @@ import nu.bruijn.rcvehicle.control.SignedFrame
  */
 class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) {
     private var audioRecord: AudioRecord? = null
+    private var echoCanceler: AcousticEchoCanceler? = null
     private var encoder: MediaCodec? = null
     private var socket: DatagramSocket? = null
     private var remoteAddress: InetAddress? = null
@@ -106,6 +108,20 @@ class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) 
             return
         }
         audioRecord = record
+
+        // Per direct request: talking to the vehicle (ControllerDriveActivity's
+        // talk-back mic, played through the vehicle phone's own speaker) was
+        // being picked straight back up by THIS instance - the vehicle's ambient
+        // CAMCORDER mic - and echoed back to whoever's listening. VOICE_COMMUNICATION
+        // (the talk-back mic's own audioSource) already gets this for free on
+        // hardware that supports it (see this class's own doc); CAMCORDER doesn't,
+        // so it's attached explicitly here instead. isAvailable() is a static
+        // capability check, not tied to this specific session - false on hardware
+        // without it, same graceful no-op as the rest of this class's HAL-quirk
+        // handling elsewhere in the app.
+        if (AcousticEchoCanceler.isAvailable()) {
+            echoCanceler = AcousticEchoCanceler.create(record.audioSessionId)?.apply { enabled = true }
+        }
 
         val thread = HandlerThread("AudioSenderCodec").apply { start() }
         audioThread = thread
@@ -175,6 +191,8 @@ class AudioSender(private val audioSource: Int = MediaRecorder.AudioSource.MIC) 
         // no-op) before anything below touches audioRecord/encoder - see the class
         // doc's [lock].
         synchronized(lock) { stopped = true }
+        echoCanceler?.release()
+        echoCanceler = null
         audioRecord?.let {
             try {
                 it.stop()

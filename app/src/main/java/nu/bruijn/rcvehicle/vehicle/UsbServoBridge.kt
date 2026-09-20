@@ -84,6 +84,18 @@ class UsbServoBridge(
      */
     var onConnected: ((Boolean) -> Unit)? = null
 
+    /** Fires once the board's real Joystick X/Y channels are actually confirmed
+     * (GETJOYCHANNELS succeeded) - lets the caller persist them and hand them to
+     * the wifi fallback (ServoBridge), which has no equivalent query of its own
+     * over HTTP/websocket (the firmware only answers GETJOYCHANNELS/GETCALIBRATION
+     * on the serial line - confirmed while investigating, no JSON/HTTP equivalent
+     * exists). Per direct request: a board's real channel mapping shouldn't only
+     * ever be known while a USB cable happens to be plugged in. */
+    var onChannelsResolved: ((steer: Int, throttle: Int) -> Unit)? = null
+
+    /** Same reasoning as [onChannelsResolved], for GETCALIBRATION. */
+    var onCalibrationResolved: ((Calibration) -> Unit)? = null
+
     fun start() {
         stop() // clean up any previous connection first
 
@@ -170,6 +182,7 @@ class UsbServoBridge(
                 if (steer != null && throttle != null) {
                     setChannels(steer, throttle)
                     onStateChange?.invoke("using board's channels: steer=CH${steer + 1} throttle=CH${throttle + 1}")
+                    onChannelsResolved?.invoke(steer, throttle)
                 }
                 // null means an older firmware that doesn't know GETJOYCHANNELS,
                 // or no reply in time - the constructor defaults stay in effect,
@@ -180,6 +193,7 @@ class UsbServoBridge(
                         val (steerMin, steerCenter, steerMax, throttleMin, throttleCenter, throttleMax) = calibration
                         setCalibration(steerMin, steerCenter, steerMax, throttleMin, throttleCenter, throttleMax)
                         onStateChange?.invoke("using board's calibration: steer=$steerMin/$steerCenter/$steerMax throttle=$throttleMin/$throttleCenter/$throttleMax")
+                        onCalibrationResolved?.invoke(calibration)
                     }
                     // null means an older firmware that doesn't know GETCALIBRATION,
                     // or no reply in time - the generic 1000/1500/2000 default stays.

@@ -88,6 +88,7 @@ class VehicleForegroundService : Service() {
     // physical cable, not a "connect via" choice like wifi is.
     val usbServoBridge = UsbServoBridge(this)
     private lateinit var networkBinder: EspWifiNetworkBinder
+    private val modePrefs by lazy { nu.bruijn.rcvehicle.mode.ModePrefs(applicationContext) }
 
     var activeLink: ServoLink? = null
         private set
@@ -531,7 +532,7 @@ class VehicleForegroundService : Service() {
         // restarting just this START_STICKY service without MainActivity ever
         // running again first).
         serviceScope.launch {
-            if (nu.bruijn.rcvehicle.mode.ModePrefs(applicationContext).debugFileLoggingEnabled.first()) {
+            if (modePrefs.debugFileLoggingEnabled.first()) {
                 nu.bruijn.rcvehicle.common.DebugFileLogger.start(applicationContext)
             }
         }
@@ -544,6 +545,55 @@ class VehicleForegroundService : Service() {
         networkBinder = EspWifiNetworkBinder(applicationContext)
         servoBridge.onStateChange = { status -> onStatus?.invoke(status) }
         usbServoBridge.onStateChange = { status -> onStatus?.invoke(status) }
+
+        // Per direct request: the wifi fallback (ServoBridge) has no way to query
+        // the board's real channels/calibration itself (see ModePrefs.boardChannels'
+        // doc) - apply whatever USB last discovered, from a previous session or
+        // this one, to BOTH links right away, and keep servoBridge in sync live
+        // whenever USB resolves something new during this session.
+        serviceScope.launch {
+            val channels = modePrefs.boardChannels.first()
+            usbServoBridge.setChannels(channels.steer, channels.throttle)
+            servoBridge.setChannels(channels.steer, channels.throttle)
+            val calibration = modePrefs.boardCalibration.first()
+            usbServoBridge.setCalibration(
+                calibration.steerMin, calibration.steerCenter, calibration.steerMax,
+                calibration.throttleMin, calibration.throttleCenter, calibration.throttleMax,
+            )
+            servoBridge.setCalibration(
+                calibration.steerMin, calibration.steerCenter, calibration.steerMax,
+                calibration.throttleMin, calibration.throttleCenter, calibration.throttleMax,
+            )
+        }
+        usbServoBridge.onChannelsResolved = { steer, throttle ->
+            servoBridge.setChannels(steer, throttle)
+            serviceScope.launch { modePrefs.setBoardChannels(steer, throttle) }
+        }
+        usbServoBridge.onCalibrationResolved = { calibration ->
+            servoBridge.setCalibration(
+                calibration.steerMin, calibration.steerCenter, calibration.steerMax,
+                calibration.throttleMin, calibration.throttleCenter, calibration.throttleMax,
+            )
+            serviceScope.launch {
+                modePrefs.setBoardCalibration(
+                    calibration.steerMin, calibration.steerCenter, calibration.steerMax,
+                    calibration.throttleMin, calibration.throttleCenter, calibration.throttleMax,
+                )
+            }
+        }
+        // ServoBridge can discover the same info itself now (parseJoystickPage()'s
+        // doc) - shares it back with USB the same way, so whichever transport
+        // connects first benefits the other.
+        servoBridge.onChannelsResolved = { steer, throttle ->
+            usbServoBridge.setChannels(steer, throttle)
+            serviceScope.launch { modePrefs.setBoardChannels(steer, throttle) }
+        }
+        servoBridge.onCalibrationResolved = { steerMin, steerCenter, steerMax, throttleMin, throttleCenter, throttleMax ->
+            usbServoBridge.setCalibration(steerMin, steerCenter, steerMax, throttleMin, throttleCenter, throttleMax)
+            serviceScope.launch {
+                modePrefs.setBoardCalibration(steerMin, steerCenter, steerMax, throttleMin, throttleCenter, throttleMax)
+            }
+        }
 
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MeshDrive:vehicle").apply {

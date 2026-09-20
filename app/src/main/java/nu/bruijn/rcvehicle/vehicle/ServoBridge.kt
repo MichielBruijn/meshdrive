@@ -66,6 +66,12 @@ class ServoBridge(
     private var client: OkHttpClient? = null
     private var webSocket: WebSocket? = null
 
+    /** Same purpose as UsbServoBridge's own callbacks of the same name - this
+     * transport CAN discover the board's real channels/calibration itself after
+     * all (see start()'s doc), so it gets to report them too. */
+    var onChannelsResolved: ((steer: Int, throttle: Int) -> Unit)? = null
+    var onCalibrationResolved: ((steerMin: Int, steerCenter: Int, steerMax: Int, throttleMin: Int, throttleCenter: Int, throttleMax: Int) -> Unit)? = null
+
     fun start(network: Network, espIp: String) {
         stop() // clean up any previous connection first
 
@@ -79,7 +85,17 @@ class ServoBridge(
         scope.launch {
             try {
                 val req = Request.Builder().url("http://$espIp/joystick/on").build()
-                okHttpClient.newCall(req).execute().close()
+                val body = okHttpClient.newCall(req).execute().use { it.body?.string() }
+                // The board's own Joystick Mode page (webInterface.h) embeds its real
+                // channel/calibration in two JS setup calls - exactly what a browser
+                // reads to draw the on-page joystick. Per direct request: if the
+                // browser can get this straight from the page, so can the app -
+                // parsed here instead of needing a USB connection to ever have
+                // queried GETJOYCHANNELS/GETCALIBRATION first (there's no HTTP/
+                // websocket equivalent of those serial commands, but this page
+                // already carries the same information as a side effect of
+                // rendering itself).
+                if (body != null) parseJoystickPage(body)
                 onStateChange?.invoke("joystick/on OK - opening websocket")
             } catch (e: Exception) {
                 onStateChange?.invoke("joystick/on failed: ${e.message}")
@@ -104,6 +120,33 @@ class ServoBridge(
         startWatchdog()
     }
 
+    /** Pulls steer/throttle channel + min/center/max µs straight out of the two
+     * `setupArcadeTrack(...)` calls the Joystick Mode page's own JS setup embeds
+     * (webInterface.h) - see start()'s doc for why this exists instead of a
+     * dedicated query command. Silently a no-op if the page doesn't match this
+     * exact shape (older/different firmware) - the constructor defaults (or
+     * whatever ModePrefs.boardChannels/boardCalibration already restored) stay
+     * in effect either way, same tolerance as UsbServoBridge's own null-result
+     * handling.
+     */
+    private fun parseJoystickPage(html: String) {
+        val steerMatch = STEER_TRACK_REGEX.find(html) ?: return
+        val throttleMatch = THROTTLE_TRACK_REGEX.find(html) ?: return
+        val (steerCh, steerMin, steerCenter, steerMax) = steerMatch.destructured
+        val (throttleCh, throttleMin, throttleCenter, throttleMax) = throttleMatch.destructured
+        setChannels(steerCh.toInt(), throttleCh.toInt())
+        setCalibration(
+            steerMin.toInt(), steerCenter.toInt(), steerMax.toInt(),
+            throttleMin.toInt(), throttleCenter.toInt(), throttleMax.toInt(),
+        )
+        onStateChange?.invoke("using board's channels: steer=CH${steerCh.toInt() + 1} throttle=CH${throttleCh.toInt() + 1}")
+        onChannelsResolved?.invoke(steerCh.toInt(), throttleCh.toInt())
+        onCalibrationResolved?.invoke(
+            steerMin.toInt(), steerCenter.toInt(), steerMax.toInt(),
+            throttleMin.toInt(), throttleCenter.toInt(), throttleMax.toInt(),
+        )
+    }
+
     override fun send(channel: Int, us: Int) {
         webSocket?.send("PosJ$channel=$us")
     }
@@ -118,5 +161,14 @@ class ServoBridge(
         webSocket = null
         client?.dispatcher?.executorService?.shutdown()
         client = null
+    }
+
+    companion object {
+        // Matches e.g. setupArcadeTrack('steerTrack','steerThumb',true,0,1000,1500,2000);
+        // - see parseJoystickPage()'s doc.
+        private val STEER_TRACK_REGEX =
+            Regex("""setupArcadeTrack\('steerTrack','steerThumb',true,(\d+),(\d+),(\d+),(\d+)\)""")
+        private val THROTTLE_TRACK_REGEX =
+            Regex("""setupArcadeTrack\('throttleTrack','throttleThumb',false,(\d+),(\d+),(\d+),(\d+)\)""")
     }
 }

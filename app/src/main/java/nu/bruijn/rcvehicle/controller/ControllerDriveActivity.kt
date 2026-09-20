@@ -1,15 +1,20 @@
 package nu.bruijn.rcvehicle.controller
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
+import android.hardware.input.InputManager
 import android.media.MediaRecorder
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.InputDevice
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
 import android.view.ViewGroup
@@ -113,6 +118,25 @@ class ControllerDriveActivity : AppCompatActivity() {
     // event frequency (same reasoning as the vehicle-side debug sliders).
     private var steerX = 0f
     private var throttleY = 0f
+
+    // Promoted to fields (rather than onCreate-locals) so the gamepad's LB button
+    // (onKeyDown/onKeyUp below) can drive the exact same toggle the touch button
+    // does - see setRearView()'s doc.
+    private lateinit var buttonRearView: Button
+    private var defaultRearViewTint: android.content.res.ColorStateList? = null
+    private var rearViewActive = false
+
+    // Same reasoning as buttonRearView above - set in setUpRecordButton(), used
+    // from onKeyDown()'s gamepad B-button handling.
+    private lateinit var buttonRecord: ImageButton
+
+    // Same reasoning - set in onCreate, used from onKeyDown()'s gamepad
+    // R1/RB handling.
+    private lateinit var buttonMute: ImageButton
+
+    // Same reasoning - set in onCreate, used from updateSliderVisibility() below.
+    private lateinit var sliderSteer: SliderView
+    private lateinit var sliderThrottle: SliderView
 
     // Debug overlay state.
     private var lastFps = -1f
@@ -286,6 +310,10 @@ class ControllerDriveActivity : AppCompatActivity() {
             if (clamped == currentQualityIndex) return
             currentQualityIndex = clamped
             controlLink.sendQuality(clamped)
+            // Per direct request - persisted regardless of whether this came from a
+            // manual button tap or the auto-quality FPS loop stepping itself, so
+            // next session starts at whatever quality was actually last in use.
+            lifecycleScope.launch { modePrefs.setLastVideoQuality(clamped) }
         }
 
         videoReceiver.onError = { msg -> log("video: $msg") }
@@ -415,6 +443,19 @@ class ControllerDriveActivity : AppCompatActivity() {
                         controlLink.sendTelemetryEnable(true)
                     }
 
+                    // Restored here (not just in the UI-restore coroutine below) for
+                    // the same reason safeSteeringEnabled/telemetryEnabled are also
+                    // read directly in this block - this coroutine and that one run
+                    // independently, so relying on the other having already finished
+                    // isn't safe. Per direct request: whatever quality was last
+                    // actually in use (manually picked, or auto-quality's last
+                    // settled-on step) is where a fresh connection starts, not
+                    // always Low.
+                    currentQualityIndex = modePrefs.lastVideoQuality.first().coerceIn(0, VideoQuality.entries.size - 1)
+                    // Button tints reflect this too - see the UI-restore coroutine
+                    // below (qualityButtons/updateQualityButtonTints aren't in scope
+                    // here yet, being declared further down this same onCreate).
+
                     // Confirmed on real hardware as a real bug: a fresh vehicle
                     // always starts its own encoder at VideoQuality.HIGH
                     // (VehicleActivity.videoSender.start()) regardless of what
@@ -534,15 +575,9 @@ class ControllerDriveActivity : AppCompatActivity() {
             lifecycleScope.launch { modePrefs.setTelemetryEnabled(checked) }
         }
 
-        val buttonRearView = findViewById<Button>(R.id.buttonRearView)
-        val defaultRearViewTint = buttonRearView.backgroundTintList
-        var rearViewActive = false
-        buttonRearView.setOnClickListener {
-            rearViewActive = !rearViewActive
-            controlLink.sendCamera(rearViewActive)
-            buttonRearView.text = getString(if (rearViewActive) R.string.controller_front_view else R.string.controller_rear_view)
-            buttonRearView.backgroundTintList = if (rearViewActive) activeTint else defaultRearViewTint
-        }
+        buttonRearView = findViewById(R.id.buttonRearView)
+        defaultRearViewTint = buttonRearView.backgroundTintList
+        buttonRearView.setOnClickListener { setRearView(!rearViewActive) }
 
         // One toggle for both directions of the mic link, per direct request: muting
         // stops listening to the vehicle's mic (audioReceiver.muted, as before) AND
@@ -550,7 +585,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         // micSender.stop()) - not two separate controls. audioReceiver.muted is the
         // single source of truth for "muted" (no separate flag to keep in sync).
         // Icon (speaker / speaker-with-slash) communicates state, so no tint needed.
-        val buttonMute = findViewById<ImageButton>(R.id.buttonMute)
+        buttonMute = findViewById(R.id.buttonMute)
         fun applyMuteUi() {
             buttonMute.setImageResource(
                 if (audioReceiver.muted) android.R.drawable.ic_lock_silent_mode else android.R.drawable.ic_lock_silent_mode_off,
@@ -572,6 +607,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         // don't need the vehicle to know anything.
         lifecycleScope.launch {
             autoQuality = modePrefs.autoQualityEnabled.first()
+            currentQualityIndex = modePrefs.lastVideoQuality.first().coerceIn(0, VideoQuality.entries.size - 1)
             updateQualityButtonTints()
 
             steerLimitEnabled = modePrefs.safeSteeringEnabled.first()
@@ -591,15 +627,17 @@ class ControllerDriveActivity : AppCompatActivity() {
 
         setUpRecordButton(::log)
 
-        findViewById<SliderView>(R.id.sliderSteer).apply {
+        sliderSteer = findViewById<SliderView>(R.id.sliderSteer).apply {
             vertical = false
             onMove = { x -> steerX = x }
         }
         // Touch y increases downward; up (forward throttle) must be positive, so negate.
-        findViewById<SliderView>(R.id.sliderThrottle).apply {
+        sliderThrottle = findViewById<SliderView>(R.id.sliderThrottle).apply {
             vertical = true
             onMove = { y -> throttleY = -y }
         }
+        updateSliderVisibility()
+        inputManager.registerInputDeviceListener(inputDeviceListener, null)
 
         var lastWarningText: String? = null
 
@@ -755,6 +793,107 @@ class ControllerDriveActivity : AppCompatActivity() {
         showPermissionDeniedIfAny(grantResults)
     }
 
+    private val inputManager by lazy { getSystemService(Context.INPUT_SERVICE) as InputManager }
+    private val inputDeviceListener = object : InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(deviceId: Int) = updateSliderVisibility()
+        override fun onInputDeviceRemoved(deviceId: Int) = updateSliderVisibility()
+        override fun onInputDeviceChanged(deviceId: Int) = updateSliderVisibility()
+    }
+
+    private fun isGamepadConnected(): Boolean =
+        inputManager.inputDeviceIds.any { id ->
+            val device = InputDevice.getDevice(id)
+            device != null && !device.isVirtual && (device.sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+        }
+
+    /** Per direct request: the touch sliders and a physical gamepad both drive
+     * steerX/throttleY (see onGenericMotionEvent's doc) and would otherwise sit
+     * on screen fighting for thumb space with the gamepad in hand - hidden
+     * whenever one's connected, back the instant it's unplugged. Re-checked on
+     * every add/remove/change (not just once) since a gamepad can be plugged
+     * in or pulled at any point during a drive, not only at connect time. */
+    private fun updateSliderVisibility() {
+        val visibility = if (isGamepadConnected()) View.GONE else View.VISIBLE
+        sliderSteer.visibility = visibility
+        sliderThrottle.visibility = visibility
+    }
+
+    /**
+     * Gamepad support (Logitech F310 over USB, per direct request) - no separate
+     * "connect" step needed: Android already routes a joystick-sourced
+     * MotionEvent to whichever window has focus the moment a stick moves, so
+     * plugging it in and touching a stick is all it takes. Split left/right per
+     * direct request, matching the touch UI's own separate steer/throttle
+     * sliders rather than one combined stick: left stick X = steerX, right
+     * stick Y = throttleY. AXIS_Z/AXIS_RZ is the right stick's standard Android
+     * mapping in the F310's default XInput mode (its DirectInput mode reports
+     * AXIS_RX/AXIS_RY instead - not handled here, switch the controller to X
+     * mode on its back if it stops responding). Touch sliders keep working
+     * untouched alongside this; whichever input moved most recently simply
+     * wins until the other one moves.
+     */
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if (event.action == MotionEvent.ACTION_MOVE && event.isFromSource(InputDevice.SOURCE_JOYSTICK)) {
+            steerX = applyStickDeadzone(event.getAxisValue(MotionEvent.AXIS_X))
+            // Same up-is-positive convention as sliderThrottle's own onMove - stick
+            // Y reports down as positive, same as touch, so negate here too.
+            throttleY = applyStickDeadzone(-event.getAxisValue(MotionEvent.AXIS_RZ))
+            return true
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
+    // Small rest-position drift on a physical stick would otherwise creep into a
+    // permanent tiny steer/throttle command instead of a clean 0 at center.
+    private fun applyStickDeadzone(value: Float, deadzone: Float = 0.1f): Float =
+        if (kotlin.math.abs(value) < deadzone) 0f else value
+
+    /** Shared by the touch button (a persistent toggle) and the gamepad's LB
+     * button (momentary - see onKeyDown/onKeyUp below), per direct request. */
+    private fun setRearView(active: Boolean) {
+        rearViewActive = active
+        controlLink.sendCamera(rearViewActive)
+        buttonRearView.text = getString(if (rearViewActive) R.string.controller_front_view else R.string.controller_rear_view)
+        buttonRearView.backgroundTintList = if (rearViewActive) activeTintColor else defaultRearViewTint
+    }
+
+    private val activeTintColor by lazy { android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#2E7D32")) }
+
+    // Gamepad LB = "look back", held - per direct request, popular racing-game
+    // convention (a shoulder button, momentary, not a toggle): rear camera while
+    // held, back to front the instant it's released. repeatCount == 0 so a held
+    // key's repeat events don't keep re-triggering setRearView(true) pointlessly.
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_L1 && event.repeatCount == 0) {
+            setRearView(true)
+            return true
+        }
+        // B (red on an Xbox-style pad, which is what the F310 in XInput mode
+        // presents as) toggles recording, per direct request - reuses
+        // buttonRecord's own click listener (performClick(), not calling
+        // setUpRecordButton's logic directly) so this stays a single source of
+        // truth for what "the record button" actually does.
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_B && event.repeatCount == 0) {
+            buttonRecord.performClick()
+            return true
+        }
+        // RB toggles mute, per direct request - same performClick() reasoning
+        // as B/record above.
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_R1 && event.repeatCount == 0) {
+            buttonMute.performClick()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_L1) {
+            setRearView(false)
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
     private var isRecording = false
     private var recordingDisplayPath: String? = null
     private var recordingUri: android.net.Uri? = null
@@ -870,7 +1009,7 @@ class ControllerDriveActivity : AppCompatActivity() {
      * for where the file actually goes.
      */
     private fun setUpRecordButton(log: (String) -> Unit) {
-        val buttonRecord = findViewById<ImageButton>(R.id.buttonRecord)
+        buttonRecord = findViewById(R.id.buttonRecord)
         buttonRecord.setOnClickListener {
             if (!isRecording) {
                 val target = createRecordingTarget()
@@ -944,7 +1083,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         gpxTrack?.let { track -> gpxBaseName?.let { saveGpxTrack(track, it, log) } }
         gpxTrack = null
         gpxBaseName = null
-        findViewById<ImageButton>(R.id.buttonRecord).setImageResource(R.drawable.record_button_idle)
+        buttonRecord.setImageResource(R.drawable.record_button_idle)
         log(if (wroteAnything) "recording saved: $recordingDisplayPath" else "recording discarded - no video was received")
     }
 
@@ -1012,6 +1151,7 @@ class ControllerDriveActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        inputManager.unregisterInputDeviceListener(inputDeviceListener)
         tickRunnable?.let { tickHandler.removeCallbacks(it) }
         controlLink.close()
         // Normally already a no-op here - onPause() (which always runs first) already

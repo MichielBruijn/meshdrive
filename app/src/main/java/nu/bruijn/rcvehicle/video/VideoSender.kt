@@ -9,12 +9,14 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import android.util.Range
 import android.view.Surface
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -315,6 +317,20 @@ class VideoSender(private val context: Context) {
                 cameraDevice = camera
                 val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
                 builder.addTarget(surface)
+                // MediaFormat.KEY_FRAME_RATE (openPipeline() above) only tells the
+                // encoder what to ASSUME for bitrate/keyframe-interval math - it
+                // does not throttle how often frames actually arrive. Confirmed on
+                // real hardware as a real bug: without this, the camera HAL kept
+                // capturing (and the encoder kept encoding) at its own default rate
+                // regardless of quality.fps, so Ultra Low's 15fps request measured
+                // as ~30fps in practice. This is what actually caps the capture
+                // rate. Same range on both ends of the Range so the HAL can't pick
+                // anything else within it - falls back silently (leaving the HAL's
+                // own default) if this exact fps isn't in the camera's supported
+                // ranges, same tolerance as the rest of this class's HAL-quirk
+                // handling (onConfigureFailed() below already falls back to a
+                // lower preset on any capture-session rejection, fps included).
+                builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(currentQuality.fps, currentQuality.fps))
                 try {
                     camera.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {

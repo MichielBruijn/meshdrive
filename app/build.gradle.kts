@@ -12,8 +12,8 @@ android {
         applicationId = "nu.bruijn.rcvehicle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 41
-        versionName = "0.3.38"
+        versionCode = 55
+        versionName = "0.3.52"
         buildConfigField("long", "EXPIRES_AT_MS", "0L")
     }
 
