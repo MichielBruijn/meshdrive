@@ -21,10 +21,16 @@ import kotlinx.coroutines.withTimeoutOrNull
  * the primary control path since 2026-09-14. A phone connected this way doesn't
  * need to juggle wifi-to-ESP32 alongside its own mobile-data uplink for Yggdrasil,
  * which is what ServoBridge's wifi approach required and where real-world testing
- * found Android's network routing to be unreliable. Bluetooth was considered for
- * the same reason but ruled out on flash budget - see the firmware's v1.22 commit
- * message for the numbers (Classic/BLEDevice ~800KB, NimBLE ~300KB, none of which
- * fit in this board's ~130KB of remaining flash).
+ * found Android's network routing to be unreliable.
+ *
+ * Bluetooth was ruled out on flash budget when this class was first written
+ * (Classic/BLEDevice ~800KB, NimBLE ~300KB, neither fit the classic ESP32 board's
+ * ~130KB of remaining flash at firmware v1.22) - that board has since been replaced
+ * by the ESP32-C3 SuperMini in the vehicle, and BLE fit there once its partition
+ * table was switched to min_spiffs.csv (this project never used a filesystem). The
+ * C3 firmware (private repo esp32-c3-servo-controller, branch main) now advertises
+ * a Nordic UART Service as "MeshDrive" alongside this USB-serial path - not yet
+ * consumed from this app, see BleServoBridge (once it exists) for that side.
  *
  * Sends the exact same "PosJ{ch}=<us>" lines as ServoBridge, over a raw serial byte
  * stream instead of a websocket - the firmware's usbJoystickLoop() (v1.22+) parses
@@ -33,8 +39,17 @@ import kotlinx.coroutines.withTimeoutOrNull
  * Uses mik3y/usb-serial-for-android, which implements the CP210x/CH34x/FTDI/PL2303
  * vendor protocols itself in Java rather than relying on a matching OEM kernel
  * driver - broad, consistent device support across phone brands is the whole
- * reason this library exists. res/xml/device_filter.xml lists the common chips
- * (this board uses Silicon Labs CP2102, confirmed via `lsusb`).
+ * reason this library exists. res/xml/device_filter.xml lists the common chips.
+ * NOTE: this was written for the classic ESP32 board (Silicon Labs CP2102 bridge
+ * chip, confirmed via `lsusb` at the time) - the C3 SuperMini now in the vehicle
+ * enumerates completely differently (native USB-CDC/JTAG, vendor:product 303a:1001,
+ * "Espressif USB JTAG/serial debug unit", confirmed via `lsusb` 2026-09-21), which
+ * is NOT in device_filter.xml. Unverified whether findAllDrivers() below (which
+ * matches against the library's own internal ID tables, independent of
+ * device_filter.xml) still recognizes it - device_filter.xml only controls
+ * Android's auto-launch-on-plug prompt, so this may still work for an
+ * already-foregrounded app while silently losing auto-launch. Check both before
+ * relying on this path with the current board.
  */
 class UsbServoBridge(
     private val context: Context,

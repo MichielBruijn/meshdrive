@@ -42,4 +42,11 @@
     <usb-device vendor-id="11914" product-id="5"   /> <!-- 0x2E8A / 0x0005: Raspberry Pi Pico Micropython -->
     <usb-device vendor-id="11914" product-id="10"  /> <!-- 0x2E8A / 0x000A: Raspberry Pi Pico SDK -->
     <usb-device vendor-id="6790" product-id="21972" /><!-- 0x1A86 / 0x55D4: Qinheng CH9102F -->
+
+    <!-- The ESP32-C3 SuperMini now in the vehicle (replaced the classic ESP32/CP2102 board this
+         file was originally copied for) has no separate bridge chip - it enumerates as its own
+         native USB-CDC/JTAG peripheral, confirmed via `lsusb` 2026-09-21. Without this entry,
+         plugging the board in doesn't prompt/auto-launch this app (see UsbServoBridge.kt's doc
+         for the separate question of whether findAllDrivers() already matched it regardless). -->
+    <usb-device vendor-id="12346" product-id="4097" /> <!-- 0x303A / 0x1001: Espressif USB JTAG/serial debug unit -->
 </resources>
