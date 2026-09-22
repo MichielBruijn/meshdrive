@@ -27,10 +27,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.coroutines.resume
 import nu.bruijn.rcvehicle.R
 import nu.bruijn.rcvehicle.common.InternetNetworkBinder
 import nu.bruijn.rcvehicle.common.QrCode
@@ -43,8 +41,8 @@ import nu.bruijn.rcvehicle.yggdrasil.YggdrasilController
 
 /**
  * Debug UI: top half connects to the ESP32 (USB-OTG serial, primary - see
- * UsbServoBridge's doc; wifi kept as a fallback via ServoBridge) and drives it
- * with two sliders. Bottom half (UDP control link over Yggdrasil, fase 4) listens
+ * UsbServoBridge's doc; BLE as an alternative, see BleServoBridge's doc) and
+ * drives it with two sliders. Bottom half (UDP control link over Yggdrasil, fase 4) listens
  * for the controller and relays whatever it receives into the SAME
  * `service.activeLink` - so with both sections connected at once this is already
  * a real end-to-end controller-phone -> vehicle-phone -> ESP32 path. Video starts
@@ -71,6 +69,8 @@ class VehicleActivity : AppCompatActivity() {
 
     // Set once onServiceConnected below has a service to attach it to - see setUsbButtonConnected() in onCreate.
     private var onUsbConnectedChanged: ((Boolean) -> Unit)? = null
+    private var onBleConnectedChanged: ((Boolean) -> Unit)? = null
+    private var isUsbConnected = false
 
     // Set in onCreate - re-run from onResume so coming back from actually opening
     // Yggdrasil (buttonOpenYggdrasil) picks up the result automatically.
@@ -91,6 +91,9 @@ class VehicleActivity : AppCompatActivity() {
             }
             service?.usbServoBridge?.onConnected = { connected ->
                 runOnUiThread { onUsbConnectedChanged?.invoke(connected) }
+            }
+            service?.bleServoBridge?.onConnected = { connected ->
+                runOnUiThread { onBleConnectedChanged?.invoke(connected) }
             }
             // Same indirection as onUsbConnectedChanged above, same reason -
             // this ServiceConnection is a class-level field, constructed
@@ -139,15 +142,14 @@ class VehicleActivity : AppCompatActivity() {
         setContentView(R.layout.activity_vehicle)
 
         // Debug mode (MainActivity's checkbox) hides raw addresses/logs/the local debug
-        // sliders/the wifi fallback - none of that is needed for normal day-to-day driving,
-        // it's here for diagnosing problems. A one-shot read is enough: changing the toggle
+        // sliders - none of that is needed for normal day-to-day driving, it's here for
+        // diagnosing problems. A one-shot read is enough: changing the toggle
         // requires going back to the mode picker anyway, there's no live-update need.
         val debugSection = findViewById<View>(R.id.debugSection)
         lifecycleScope.launch {
             debugSection.visibility = if (ModePrefs(applicationContext).debugEnabled.first()) View.VISIBLE else View.GONE
         }
 
-        val editIp = findViewById<EditText>(R.id.editEspIp)
         val seekSteer = findViewById<SeekBar>(R.id.seekSteer)
         val seekThrottle = findViewById<SeekBar>(R.id.seekThrottle)
         val textOwnAddress = findViewById<TextView>(R.id.textOwnYggdrasilAddress)
@@ -163,7 +165,12 @@ class VehicleActivity : AppCompatActivity() {
             logView.text = lines.takeLast(maxLogLines + 1).joinToString("\n")
         }
 
-        val neededPermissions = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION)
+        val basePermissions = mutableListOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            basePermissions += Manifest.permission.BLUETOOTH_SCAN
+            basePermissions += Manifest.permission.BLUETOOTH_CONNECT
+        }
+        val neededPermissions = basePermissions
             .filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (neededPermissions.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, neededPermissions.toTypedArray(), 1)
@@ -175,6 +182,7 @@ class VehicleActivity : AppCompatActivity() {
         val usbConnectedTint = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#2E7D32"))
 
         fun setUsbButtonConnected(connected: Boolean) {
+            isUsbConnected = connected
             buttonConnectUsb.backgroundTintList = if (connected) usbConnectedTint else defaultUsbButtonTint
             buttonConnectUsb.text = if (connected) getString(R.string.vehicle_usb_connected) else defaultUsbButtonText
         }
@@ -184,11 +192,28 @@ class VehicleActivity : AppCompatActivity() {
             service?.connectUsb()
         }
 
-        setUpFirmwareUpdateUi()
-
-        findViewById<Button>(R.id.buttonConnect).setOnClickListener {
-            service?.connectToEsp(editIp.text.toString().trim())
+        val buttonConnectBle = findViewById<Button>(R.id.buttonConnectBle)
+        val defaultBleButtonText = buttonConnectBle.text
+        fun setBleButtonConnected(connected: Boolean) {
+            buttonConnectBle.backgroundTintList = if (connected) usbConnectedTint else defaultUsbButtonTint
+            buttonConnectBle.text = if (connected) getString(R.string.vehicle_usb_connected) else defaultBleButtonText
         }
+        onBleConnectedChanged = ::setBleButtonConnected
+
+        buttonConnectBle.setOnClickListener {
+            service?.connectBle()
+        }
+        // Servo settings live on the board's own web interface now, not a native screen here -
+        // per direct request, after VehicleSettingsActivity's toggle-based channel picker (mirroring
+        // the firmware's own SETJOYX/SETJOYY semantics too literally) left steer and throttle
+        // both pointing at the same channel on real hardware, among other confusion. Opens the
+        // browser straight to the board's AP IP; works once the phone has joined "MespDrive" -
+        // same wifi this app's own firmware-install flow already asks for.
+        findViewById<Button>(R.id.buttonSettings).setOnClickListener {
+            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("http://192.168.4.1")))
+        }
+
+        setUpFirmwareUpdateUi()
 
         val imageQr = findViewById<ImageView>(R.id.imageYggdrasilQr)
         val textYggdrasilStatus = findViewById<TextView>(R.id.textYggdrasilStatus)
@@ -233,10 +258,31 @@ class VehicleActivity : AppCompatActivity() {
                         // this point - MainActivity's own flow already went
                         // through VpnService.prepare() before ever launching
                         // this screen), then re-polls as before.
-                        lifecycleScope.launch {
-                            val candidates = ModePrefs(applicationContext).yggdrasilPeerCandidates.first()
-                            YggdrasilController.start(this@VehicleActivity, candidates)
-                            checkYggdrasil()
+                        //
+                        // Same VpnConflictDetector check as MainActivity.selectMode() - this is
+                        // a SEPARATE call to YggdrasilController.start() that bypassed it before.
+                        // Confirmed on real hardware as a real bug: silently preempted a native
+                        // Yggdrasil app's own VPN with no warning (Android only allows one
+                        // VpnService active at a time, and doesn't restore the old one when ours
+                        // stops - the native app has to notice and reconnect itself, which
+                        // showed up as adb-over-Yggdrasil needing a manual reset+killall to
+                        // recover, nothing to do with adb itself).
+                        fun startYggdrasil() {
+                            lifecycleScope.launch {
+                                val candidates = ModePrefs(applicationContext).yggdrasilPeerCandidates.first()
+                                YggdrasilController.start(this@VehicleActivity, candidates)
+                                checkYggdrasil()
+                            }
+                        }
+                        if (nu.bruijn.rcvehicle.yggdrasil.VpnConflictDetector.isForeignVpnActive(this@VehicleActivity)) {
+                            android.app.AlertDialog.Builder(this@VehicleActivity)
+                                .setTitle(R.string.main_vpn_conflict_title)
+                                .setMessage(R.string.main_vpn_conflict_message)
+                                .setPositiveButton(R.string.main_vpn_conflict_continue) { _, _ -> startYggdrasil() }
+                                .setNegativeButton(R.string.main_vpn_conflict_cancel, null)
+                                .show()
+                        } else {
+                            startYggdrasil()
                         }
                     }
                 }
@@ -324,7 +370,7 @@ class VehicleActivity : AppCompatActivity() {
         // the plan's eventual data-channel design (section 4). Sending only on
         // SeekBar's own onProgressChanged events was the earlier bug: touch-move events
         // don't fire at a guaranteed steady rate, so gaps over 300ms kept tripping
-        // ServoBridge's own failsafe mid-drag, snapping to center and back - that's the
+        // ServoLink's own failsafe mid-drag, snapping to center and back - that's the
         // jitter. A steady heartbeat is what the failsafe is designed to key off.
         //
         // Skipped entirely while a remote controller has sent something in the last
@@ -370,94 +416,126 @@ class VehicleActivity : AppCompatActivity() {
     }
 
     /**
-     * "Check for update" reads the running version over the same USB cable as normal
-     * driving (UsbServoBridge.checkFirmwareVersion(), needs the board to answer
-     * "GETVERSION" - which is why this checks service?.usbServoBridge specifically,
-     * not whatever activeLink happens to be). "Install update" goes over wifi instead
-     * (WifiFirmwareUpdater) - see its doc for why the two use different transports.
+     * "Check for update" reads the running version over whichever link is active (USB
+     * or BLE - ServoLinkCommands.sendCommand("GETVERSION"), same generic mechanism the
+     * settings screen uses). If a newer release exists, its firmware.bin is downloaded
+     * right away (over real internet, InternetNetworkBinder) and kept in memory - by
+     * the time "Install update" joins the board's own wifi AP ("MespDrive", which has
+     * no internet of its own), nothing left to fetch can block on that.
+     *
+     * USB-serial install was tried twice this session (this app's own OTAUPDATE
+     * chunk/ACK protocol, then a full esp-serial-flasher/esptool ROM-bootloader
+     * reimplementation over USB-OTG) and neither proved reliable on this board's
+     * native USB-CDC from Android - confirmed across multiple phones and reset
+     * methods, while the exact same bytes/protocol worked instantly from a laptop.
+     * Wifi (WifiFirmwareUpdater, over the board's own AP) is the actual install path.
      */
     private fun setUpFirmwareUpdateUi() {
         val buttonCheckUpdate = findViewById<Button>(R.id.buttonCheckUpdate)
         val buttonInstallUpdate = findViewById<Button>(R.id.buttonInstallUpdate)
         val textUpdateStatus = findViewById<TextView>(R.id.textUpdateStatus)
         var pendingRelease: FirmwareUpdater.Release? = null
+        var pendingFirmware: ByteArray? = null
 
         buttonCheckUpdate.setOnClickListener {
             buttonCheckUpdate.isEnabled = false
             buttonInstallUpdate.visibility = View.GONE
+            pendingRelease = null
+            pendingFirmware = null
             textUpdateStatus.text = "Checking board version…"
             lifecycleScope.launch {
-                val currentVersion = withContext(Dispatchers.IO) {
-                    suspendCancellableCoroutine<String?> { cont ->
-                        service?.usbServoBridge?.checkFirmwareVersion { cont.resume(it) } ?: cont.resume(null)
+                val link = service?.activeLink as? ServoLinkCommands
+                // Up to 3 attempts, not 1 - confirmed on real hardware as a real gap: a single
+                // shot right after connecting could race UsbServoBridge.openPort()'s own
+                // background checkJoystickChannels()/checkCalibration() round-trips for the
+                // same port's read stream (same underlying reasoning as their own retry loop's
+                // doc), showing "could not read board version" on the very first tap even
+                // though the board was genuinely connected.
+                var currentVersion: String? = null
+                if (link != null) {
+                    for (attempt in 1..3) {
+                        val result = withContext(Dispatchers.IO) { link.sendCommand("GETVERSION") }
+                        currentVersion = (result as? CommandResult.Ok)?.response?.removePrefix("VERSION=")
+                        if (currentVersion != null) break
                     }
                 }
                 if (currentVersion == null) {
-                    textUpdateStatus.text = "Could not read board version - connect via USB first"
+                    textUpdateStatus.text = "Could not read board version - connect via USB or Bluetooth first"
                     buttonCheckUpdate.isEnabled = true
                     return@launch
                 }
                 textUpdateStatus.text = "Board is v$currentVersion, checking GitHub…"
                 val internet = withContext(Dispatchers.IO) { getInternetNetwork() }
                 val release = withContext(Dispatchers.IO) { FirmwareUpdater.fetchLatestRelease(internet) }
-                buttonCheckUpdate.isEnabled = true
                 when {
-                    release == null -> textUpdateStatus.text = "Board v$currentVersion - could not reach GitHub"
-                    FirmwareUpdater.isNewer(release.version, currentVersion) -> {
-                        pendingRelease = release
-                        textUpdateStatus.text = "Update available: v${release.version} (board is v$currentVersion)"
-                        buttonInstallUpdate.visibility = View.VISIBLE
+                    release == null -> {
+                        textUpdateStatus.text = "Board v$currentVersion - could not reach GitHub"
+                        buttonCheckUpdate.isEnabled = true
                     }
-                    else -> textUpdateStatus.text = "Board v$currentVersion - up to date"
+                    FirmwareUpdater.isNewer(release.version, currentVersion) -> {
+                        textUpdateStatus.text = "Downloading v${release.version}…"
+                        val bytes = withContext(Dispatchers.IO) { FirmwareUpdater.download(release.downloadUrl, internet) }
+                        buttonCheckUpdate.isEnabled = true
+                        if (bytes == null) {
+                            textUpdateStatus.text = "Update v${release.version} found, but download failed"
+                        } else {
+                            pendingRelease = release
+                            pendingFirmware = bytes
+                            textUpdateStatus.text = "v${release.version} downloaded. Connect your phone to the " +
+                                "board's \"MespDrive\" wifi (password 123456789), then tap Install."
+                            buttonInstallUpdate.visibility = View.VISIBLE
+                        }
+                    }
+                    else -> {
+                        textUpdateStatus.text = "Board v$currentVersion - up to date"
+                        buttonCheckUpdate.isEnabled = true
+                    }
                 }
             }
         }
 
-        // Installing goes over wifi (WifiFirmwareUpdater), not the USB cable checking used
-        // above - see its doc for why: the raw USB-serial link corrupted this specific bulk
-        // transfer on every attempt, confirmed via an MD5 mismatch even after a full,
-        // uninterrupted transfer, despite several rounds of fixes. Requires the phone to
-        // already be joined to the ESP32's own wifi network (same one-time manual join the
-        // wifi-fallback control path above needs).
+        // Installs over the board's own wifi AP (WifiFirmwareUpdater) - see this
+        // function's doc and WifiFirmwareUpdater's doc for why not USB. The firmware is
+        // already fully downloaded by the time this runs (buttonCheckUpdate's handler
+        // above), so this step needs no internet of its own - only
+        // EspWifiNetworkBinder's no-internet AP connection.
         buttonInstallUpdate.setOnClickListener {
             val release = pendingRelease ?: return@setOnClickListener
+            val bytes = pendingFirmware ?: return@setOnClickListener
             buttonInstallUpdate.isEnabled = false
             buttonCheckUpdate.isEnabled = false
-            textUpdateStatus.text = "Downloading v${release.version}…"
+            textUpdateStatus.text = "Waiting for \"MespDrive\" wifi…"
             lifecycleScope.launch {
-                val internet = withContext(Dispatchers.IO) { getInternetNetwork() }
-                val bytes = withContext(Dispatchers.IO) { FirmwareUpdater.download(release.downloadUrl, internet) }
-                if (bytes == null) {
-                    textUpdateStatus.text = "Download failed"
-                    buttonInstallUpdate.isEnabled = true
-                    buttonCheckUpdate.isEnabled = true
-                    return@launch
-                }
-                textUpdateStatus.text = "Joining ESP32 wifi…"
-                val network = withContext(Dispatchers.IO) {
-                    withTimeoutOrNull(15_000) {
-                        EspWifiNetworkBinder(applicationContext).observe()
-                            .filterIsInstance<EspWifiNetworkBinder.State.Available>()
-                            .first().network
-                    }
+                val binder = EspWifiNetworkBinder(this@VehicleActivity)
+                val network = withTimeoutOrNull(20_000) {
+                    binder.observe().filterIsInstance<EspWifiNetworkBinder.State.Available>().first().network
                 }
                 if (network == null) {
-                    textUpdateStatus.text = "Could not reach ESP32 wifi - join its network first (see fallback section)"
+                    textUpdateStatus.text = "Not connected to \"MespDrive\" - join it in wifi settings and try again"
                     buttonInstallUpdate.isEnabled = true
                     buttonCheckUpdate.isEnabled = true
                     return@launch
                 }
-                val espIp = findViewById<EditText>(R.id.editEspIp).text.toString().trim().ifEmpty { "192.168.4.1" }
                 textUpdateStatus.text = "Uploading 0%…"
                 val (success, message) = withContext(Dispatchers.IO) {
-                    WifiFirmwareUpdater().upload(network, espIp, bytes) { written, total ->
-                        runOnUiThread { textUpdateStatus.text = "Uploading ${written * 100 / total}%…" }
-                    }
+                    WifiFirmwareUpdater().upload(
+                        network,
+                        "192.168.4.1",
+                        bytes,
+                        onProgress = { written, total ->
+                            runOnUiThread { textUpdateStatus.text = "Uploading ${written * 100 / total}%…" }
+                        },
+                    )
                 }
-                textUpdateStatus.text = if (success) "v${release.version} installed - $message" else "Update failed: $message"
+                textUpdateStatus.text = if (success) {
+                    "v${release.version} installed - disconnect from \"MespDrive\" wifi to restore internet"
+                } else {
+                    "Update failed: $message"
+                }
                 buttonCheckUpdate.isEnabled = true
                 if (success) {
                     pendingRelease = null
+                    pendingFirmware = null
                 } else {
                     buttonInstallUpdate.isEnabled = true
                 }

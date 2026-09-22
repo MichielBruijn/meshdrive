@@ -363,15 +363,9 @@ class ModePrefs(private val context: Context) {
      * The ESP32's own configured Joystick X/Y channels and steer/throttle µs
      * calibration, as last discovered over USB (UsbServoBridge.checkJoystickChannels()/
      * checkCalibration()) - persisted (not just held in the live instance) and
-     * shared with ServoBridge (the wifi fallback), which has no way to query
-     * this itself: the firmware only answers GETJOYCHANNELS/GETCALIBRATION on
-     * the serial line, nothing equivalent exists over HTTP/websocket. Per direct
-     * request, confirmed on real hardware as a real bug - without this, wifi
-     * fallback silently drove ServoLink's generic constructor defaults (steer=3/
-     * throttle=4, 1000/1500/2000µs), which on this specific board are simply
-     * wrong (real steer=0, throttle=3) - only one slider visibly did anything,
-     * and on the wrong physical connector. Defaults here match those same
-     * generic constructor values, so a board that's never been resolved over
+     * shared with BleServoBridge, which has no async query of its own for this.
+     * Defaults here match ServoLink's generic constructor values (steer=3/
+     * throttle=4, 1000/1500/2000µs), so a board that's never been resolved over
      * USB yet behaves exactly as before this existed.
      */
     data class BoardChannels(val steer: Int, val throttle: Int)

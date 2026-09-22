@@ -1,6 +1,7 @@
 package nu.bruijn.rcvehicle.vehicle
 
 import android.net.Network
+import android.util.Log
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -10,17 +11,22 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
- * Flashes firmware onto the ESP32 over its own wifi AP, using the board's existing
- * "POST /uploadfirmware/on" endpoint (webInterface.h/firmwareUpdate.h's
- * uploadCurrentFirmware()) - a plain TCP upload, which has real error detection
- * built into the transport (retransmission/checksums). This replaces flashing over
- * the raw USB-serial link (UsbServoBridge.flashFirmware()): that link corrupted the
- * transfer on every attempt - confirmed via Update.setMD5() catching an MD5
- * mismatch even after a full, uninterrupted 115200-baud transfer - despite several
- * rounds of protocol/timing fixes (a baud-switch handshake, removing read/write
- * concurrency, purging stale hardware buffers). GETVERSION (checkFirmwareVersion())
- * stays on USB - that's a tiny few-byte round trip, never implicated in the
- * corruption, no reason to also require wifi just to check the current version.
+ * Flashes firmware onto the ESP32 over its own wifi AP ("MespDrive"), using the
+ * board's existing "POST /uploadfirmware/on" endpoint (webInterface.h/
+ * firmwareUpdate.h's uploadCurrentFirmware()) - a plain TCP upload, which has real
+ * error detection built into the transport (retransmission/checksums).
+ *
+ * Both USB-serial approaches tried before this (the app's own OTAUPDATE chunk/ACK
+ * protocol, and later a full esp-serial-flasher/esptool ROM-bootloader
+ * reimplementation over USB-OTG) proved unreliable on this board's native USB-CDC
+ * from Android specifically - confirmed across multiple phones and reset methods,
+ * while the exact same bytes/protocol worked instantly from a laptop. This wifi
+ * path sidesteps USB entirely for the install step.
+ *
+ * [data] must already be fully downloaded before joining the ESP32's AP - see
+ * VehicleActivity.setUpFirmwareUpdateUi(): "Check for update" downloads the
+ * release immediately once a newer version is found, specifically so the AP-join
+ * step below (which has no internet of its own) never needs it.
  *
  * Requires the phone to already be joined to the ESP32's wifi network - same
  * EspWifiNetworkBinder-bound-socket approach as ServoBridge's control link, so this
@@ -28,6 +34,14 @@ import java.util.concurrent.TimeUnit
  * running unaffected).
  */
 class WifiFirmwareUpdater {
+    // Plain e.message on some of these (esp. raw Socket/okio errno exceptions) is a terse
+    // fragment like "write failed" with the actually-useful part (ECONNRESET, ETIMEDOUT, ...)
+    // buried in the cause - surface the whole chain instead of guessing which layer matters.
+    private fun describe(e: Throwable): String {
+        val parts = generateSequence(e) { it.cause }.map { "${it::class.simpleName}: ${it.message}" }
+        return parts.joinToString(" <- ")
+    }
+
     fun upload(
         network: Network,
         espIp: String,
@@ -78,9 +92,11 @@ class WifiFirmwareUpdater {
             // POST /uploadfirmware/on) - the connection just dies when the board reboots.
             // Only trust that as success if the full body was definitely already sent -
             // otherwise this is indistinguishable from a genuinely dropped upload.
-            if (fullyWritten) true to "update installed, vehicle rebooting" else false to "upload failed: ${e.message}"
+            Log.e("WifiFirmwareUpdater", "upload IOException, fullyWritten=$fullyWritten", e)
+            if (fullyWritten) true to "update installed, vehicle rebooting" else false to "upload failed: ${describe(e)}"
         } catch (e: Exception) {
-            false to "upload failed: ${e.message}"
+            Log.e("WifiFirmwareUpdater", "upload failed", e)
+            false to "upload failed: ${describe(e)}"
         } finally {
             client.dispatcher.executorService.shutdown()
         }

@@ -10,9 +10,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
 /**
- * Obtains a handle to whichever network currently has real, validated internet -
- * the counterpart to EspWifiNetworkBinder's "wifi without internet" request. Needed
- * because a plain, unbound OkHttpClient just follows the phone's current default
+ * Obtains a handle to whichever network currently has real, validated internet.
+ * Needed because a plain, unbound OkHttpClient just follows the phone's current default
  * route, which can silently BE the ESP32's own no-internet AP once the phone has
  * joined it (confirmed on real hardware: FirmwareUpdater's GitHub check/download
  * failed while connected to the ESP32's AP, since that network was what got picked

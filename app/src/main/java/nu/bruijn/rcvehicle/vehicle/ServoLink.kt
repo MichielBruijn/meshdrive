@@ -10,12 +10,9 @@ import kotlinx.coroutines.launch
 
 /**
  * Shared -1.0..1.0 -> microseconds mapping and failsafe-watchdog logic for the two
- * ways of reaching the ESP32's Joystick Mode: wifi/websocket (ServoBridge) and
- * USB-OTG serial (UsbServoBridge, added 2026-09-14 as the primary path - avoids
- * the vehicle phone having to juggle wifi-to-ESP32 plus its own mobile-data
- * uplink for Yggdrasil at the same time; wifi is kept as a fallback option).
- * Only `send(channel, us)` - how the two raw PosJ writes actually reach the board -
- * differs between the two transports.
+ * ways of reaching the ESP32's Joystick Mode: USB-OTG serial (UsbServoBridge,
+ * primary) and BLE (BleServoBridge). Only `send(channel, us)` - how the two raw
+ * PosJ writes actually reach the board - differs between the two transports.
  */
 abstract class ServoLink(
     private var steerChannel: Int,
@@ -42,8 +39,8 @@ abstract class ServoLink(
 
     var onStateChange: ((String) -> Unit)? = null
 
-    // Stays true for ServoBridge (wifi path - never touches this, no async
-    // channel query exists there). UsbServoBridge sets this false right after
+    // Stays true for BleServoBridge (never touches this, no async channel query
+    // exists there). UsbServoBridge sets this false right after
     // connecting and back to true once checkJoystickChannels()'s USB round-trip
     // resolves (steer/throttle found or confirmed unknown) - closes a real race
     // confirmed on hardware: sendControl() could fire on the constructor's
@@ -147,4 +144,17 @@ abstract class ServoLink(
         stopWatchdog()
         lastControlAtMs = 0L
     }
+}
+
+/** Generic GET/SET command round-trip, implemented by both UsbServoBridge and
+ * BleServoBridge. Any reply line other than "ERROR:..." resolves Ok(line) as-is
+ * (callers strip their own expected prefix, e.g. "CHANNEL="); nothing in time -> Timeout. */
+interface ServoLinkCommands {
+    suspend fun sendCommand(command: String, timeoutMs: Long = 1500): CommandResult
+}
+
+sealed class CommandResult {
+    data class Ok(val response: String) : CommandResult()
+    data class Error(val reason: String) : CommandResult()
+    data object Timeout : CommandResult()
 }

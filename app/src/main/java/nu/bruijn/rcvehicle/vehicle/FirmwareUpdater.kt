@@ -5,16 +5,25 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 
 /**
- * Checks GitHub Releases for a newer ESP32 firmware build and downloads it - the
- * phone-side half of updating over USB (see UsbServoBridge.checkFirmwareVersion()/
- * flashFirmware() for the other half, and the firmware's own firmwareUpdate.h for
- * why this is needed at all: the board's own GitHub-based update check requires
- * wifi+internet, which the USB-only primary control path never has). Same repo
- * and "firmware.bin" asset name the board's own checkForFirmwareUpdate() already
- * uses, so a release built for one update path works for both.
+ * Checks GitHub Releases for a newer ESP32 firmware build and downloads it - see
+ * VehicleActivity.setUpFirmwareUpdateUi() for the version-check (any link,
+ * ServoLinkCommands.sendCommand("GETVERSION")) and install (WifiFirmwareUpdater,
+ * over the board's own AP) halves, and the firmware's own firmwareUpdate.h for why
+ * this download step exists at all: the board's own GitHub-based update check
+ * requires wifi+internet, which it never has while running as its own AP. Same
+ * repo and "firmware.bin" asset name the board's own checkForFirmwareUpdate()
+ * already uses, so a release built for one update path works for both.
  *
  * No JSON library needed for two flat string fields - same reasoning as the
  * firmware's own jsonStringField() helper.
+ *
+ * RELEASES_API_URL points at esp32-c3-servo-controller (made public per direct
+ * request, specifically so this app can fetch its releases without embedding a
+ * GitHub token in the APK) - not esp32-servo-tester, the classic-board repo this
+ * pointed at until a real-hardware test caught it: the wrong architecture's binary
+ * (classic board, Xtensa) uploaded over wifi byte-for-byte successfully, then
+ * Update.end() correctly rejected it as an invalid image on this RISC-V chip -
+ * "Write failed: N/N bytes, end=0, ...".
  *
  * [network], when given, forces these calls onto a specific Network (see
  * InternetNetworkBinder) instead of the phone's current default route - confirmed
@@ -25,7 +34,7 @@ import okhttp3.Request
  */
 object FirmwareUpdater {
     private const val RELEASES_API_URL =
-        "https://api.github.com/repos/MichielBruijn/esp32-servo-tester/releases/latest"
+        "https://api.github.com/repos/MichielBruijn/esp32-c3-servo-controller/releases/latest"
     private const val ASSET_NAME = "firmware.bin"
 
     data class Release(val version: String, val downloadUrl: String)
@@ -66,9 +75,19 @@ object FirmwareUpdater {
         }
     }
 
-    /** True if [remote] (e.g. "1.25") is a newer version string than [current]. */
+    // Plain toFloatOrNull() is strict - it returns null (not a best-effort parse) for anything
+    // with a trailing non-numeric suffix, which this board's own codeVersion always has
+    // ("0.2-c3mini"). Confirmed on real hardware as a genuine bug: both sides silently fell
+    // back to 0f and isNewer() always returned false - "up to date" no matter what actually
+    // released. Extract just the leading numeric prefix instead.
+    private val leadingNumber = Regex("""^[0-9]+(\.[0-9]+)?""")
+
+    private fun leadingVersionNumber(version: String): Float =
+        leadingNumber.find(version)?.value?.toFloatOrNull() ?: 0f
+
+    /** True if [remote] (e.g. "0.2-c3mini") is a newer version string than [current]. */
     fun isNewer(remote: String, current: String): Boolean =
-        (remote.toFloatOrNull() ?: 0f) > (current.toFloatOrNull() ?: 0f)
+        leadingVersionNumber(remote) > leadingVersionNumber(current)
 
     private fun jsonStringField(json: String, key: String, searchFrom: Int = 0): String? {
         val needle = "\"$key\":\""

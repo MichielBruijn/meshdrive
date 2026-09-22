@@ -401,9 +401,28 @@ class YggdrasilVpnService : VpnService() {
         tunnel?.let { runCatching { it.close() } }
         tunnel = null
 
+        // join(), not just interrupt() - confirmed on real hardware as a genuine, session-
+        // corrupting bug: yggdrasil is one shared instance reused across reconnects (see its
+        // field doc), not a fresh one per session, and interrupt() doesn't reliably unblock a
+        // thread stuck inside a blocking Go/JNI call (yggdrasil.recvBuffer() in particular -
+        // only closing the TUN fd reliably woke the reader here, per its own logged
+        // "read interrupted by close()", never the interrupt itself). Abandoning these threads
+        // without waiting for them to actually exit let a stale writer - still blocked in
+        // recvBuffer() when this ran - wake up holding data that belongs to the *new* session
+        // (started immediately after this returns) and write it through its own stale,
+        // already-closed writerStream: an EIO that then tore the brand-new session down too,
+        // and a "mesh session died" misattributed to the new session by the shared meshUp flag
+        // (see onPumpThreadExited()'s own doc). Bounded, not indefinite - a genuinely wedged
+        // native call shouldn't hang reconnects forever, but should be rare now that closing
+        // the streams above already unblocks the common case.
+        // Skip joining whichever of these IS the calling thread - disconnectMesh() can run from
+        // either pump thread itself (via handleMeshSessionDied()), not just PeerMonitor's, and
+        // a thread can't join itself.
         readerThread?.interrupt()
+        readerThread?.takeIf { it != Thread.currentThread() }?.let { runCatching { it.join(1000) } }
         readerThread = null
         writerThread?.interrupt()
+        writerThread?.takeIf { it != Thread.currentThread() }?.let { runCatching { it.join(1000) } }
         writerThread = null
     }
 
@@ -433,10 +452,32 @@ class YggdrasilVpnService : VpnService() {
                     continue
                 }
                 if (forceReconnect.compareAndSet(true, false)) {
-                    activePeerUri?.let { peer ->
-                        Log.i(TAG, "redialing $peer (network change)")
-                        disconnectMesh()
-                        connectMesh(peer)
+                    // yggdrasil.retryPeersNow() (contrib/mobile/mobile.go's RetryPeersNow():
+                    // "resets the peer connection timer and tries to dial them immediately"),
+                    // not a full disconnectMesh()+connectMesh() cycle - the TUN interface and
+                    // its pump threads never cared which physical route the peer connection
+                    // takes, only the Yggdrasil core's own dial logic does. This nudges the
+                    // SAME already-configured peer to redial now instead of tearing down and
+                    // rebuilding the whole session (TUN fd, both pump threads) just to end up
+                    // dialing the identical peer again - what "redialing $peer (network
+                    // change)" used to do here. Confirmed on real hardware as strictly worse
+                    // than not reconnecting at all in one case: a stale pump thread still
+                    // blocked in a Go/JNI call across the teardown wrote a newer session's data
+                    // into the old, already-closed TUN fd (EIO), which then tore the *new*
+                    // session down too and left VpnService.Builder.establish() permanently
+                    // failing - see disconnectMesh()'s own doc for the join() mitigation added
+                    // for the cases that still do need a real reconnect (evaluate()'s genuine
+                    // peer switches, which target a different peer/config and still need
+                    // startJSON() against it, not just a redial).
+                    if (meshUp.get()) {
+                        Log.i(TAG, "retrying peers now (network change)")
+                        runCatching { yggdrasil.retryPeersNow() }
+                    } else {
+                        activePeerUri?.let { peer ->
+                            Log.i(TAG, "redialing $peer (network change)")
+                            disconnectMesh()
+                            connectMesh(peer)
+                        }
                     }
                 }
                 val results = PeerLatencyProbe.measureAll(candidates)

@@ -41,10 +41,10 @@ import nu.bruijn.rcvehicle.yggdrasil.YggdrasilController
 
 /**
  * Hosts both ways of reaching the ESP32 - USB-OTG serial (UsbServoBridge, primary
- * since 2026-09-14) and wifi (ServoBridge, kept as a fallback) - so whichever one
- * is active survives screen-off/backgrounding. `activeLink` is whichever the user
- * last successfully connected; VehicleActivity's control-input tick loop sends
- * through that regardless of which transport it is.
+ * since 2026-09-14) and BLE (BleServoBridge) - so whichever one is active survives
+ * screen-off/backgrounding. `activeLink` is whichever the user last successfully
+ * connected; VehicleActivity's control-input tick loop sends through that
+ * regardless of which transport it is.
  *
  * Also owns the whole controller-facing side (ControlLink/VideoSender/AudioSender/
  * the controller-voice AudioReceiver, and the network-churn watch loop that
@@ -81,21 +81,17 @@ class VehicleForegroundService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private val channelId = "vehicle_service"
 
-    private val servoBridge = ServoBridge()
-
     // Public (not just `activeLink`): firmware updates need this specific transport
     // regardless of which link is currently relaying joystick commands - USB is a
     // physical cable, not a "connect via" choice like wifi is.
     val usbServoBridge = UsbServoBridge(this)
-    private lateinit var networkBinder: EspWifiNetworkBinder
+    val bleServoBridge = BleServoBridge(this)
     private val modePrefs by lazy { nu.bruijn.rcvehicle.mode.ModePrefs(applicationContext) }
 
     var activeLink: ServoLink? = null
         private set
 
     var onStatus: ((String) -> Unit)? = null
-    private var espIp: String = "192.168.4.1"
-    private var networkJob: Job? = null
 
     // Screen timeout locking the vehicle phone must not stop it sending - a real,
     // reported requirement, not a hypothetical one. A correctly-typed foreground
@@ -542,35 +538,31 @@ class VehicleForegroundService : Service() {
             )
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
-        networkBinder = EspWifiNetworkBinder(applicationContext)
-        servoBridge.onStateChange = { status -> onStatus?.invoke(status) }
         usbServoBridge.onStateChange = { status -> onStatus?.invoke(status) }
+        bleServoBridge.onStateChange = { status -> onStatus?.invoke(status) }
 
-        // Per direct request: the wifi fallback (ServoBridge) has no way to query
-        // the board's real channels/calibration itself (see ModePrefs.boardChannels'
-        // doc) - apply whatever USB last discovered, from a previous session or
-        // this one, to BOTH links right away, and keep servoBridge in sync live
-        // whenever USB resolves something new during this session.
+        // Keep BLE in sync with whatever USB last discovered, from a previous
+        // session or this one.
         serviceScope.launch {
             val channels = modePrefs.boardChannels.first()
             usbServoBridge.setChannels(channels.steer, channels.throttle)
-            servoBridge.setChannels(channels.steer, channels.throttle)
+            bleServoBridge.setChannels(channels.steer, channels.throttle)
             val calibration = modePrefs.boardCalibration.first()
             usbServoBridge.setCalibration(
                 calibration.steerMin, calibration.steerCenter, calibration.steerMax,
                 calibration.throttleMin, calibration.throttleCenter, calibration.throttleMax,
             )
-            servoBridge.setCalibration(
+            bleServoBridge.setCalibration(
                 calibration.steerMin, calibration.steerCenter, calibration.steerMax,
                 calibration.throttleMin, calibration.throttleCenter, calibration.throttleMax,
             )
         }
         usbServoBridge.onChannelsResolved = { steer, throttle ->
-            servoBridge.setChannels(steer, throttle)
+            bleServoBridge.setChannels(steer, throttle)
             serviceScope.launch { modePrefs.setBoardChannels(steer, throttle) }
         }
         usbServoBridge.onCalibrationResolved = { calibration ->
-            servoBridge.setCalibration(
+            bleServoBridge.setCalibration(
                 calibration.steerMin, calibration.steerCenter, calibration.steerMax,
                 calibration.throttleMin, calibration.throttleCenter, calibration.throttleMax,
             )
@@ -579,19 +571,6 @@ class VehicleForegroundService : Service() {
                     calibration.steerMin, calibration.steerCenter, calibration.steerMax,
                     calibration.throttleMin, calibration.throttleCenter, calibration.throttleMax,
                 )
-            }
-        }
-        // ServoBridge can discover the same info itself now (parseJoystickPage()'s
-        // doc) - shares it back with USB the same way, so whichever transport
-        // connects first benefits the other.
-        servoBridge.onChannelsResolved = { steer, throttle ->
-            usbServoBridge.setChannels(steer, throttle)
-            serviceScope.launch { modePrefs.setBoardChannels(steer, throttle) }
-        }
-        servoBridge.onCalibrationResolved = { steerMin, steerCenter, steerMax, throttleMin, throttleCenter, throttleMax ->
-            usbServoBridge.setCalibration(steerMin, steerCenter, steerMax, throttleMin, throttleCenter, throttleMax)
-            serviceScope.launch {
-                modePrefs.setBoardCalibration(steerMin, steerCenter, steerMax, throttleMin, throttleCenter, throttleMax)
             }
         }
 
@@ -691,35 +670,11 @@ class VehicleForegroundService : Service() {
         usbServoBridge.start()
     }
 
-    /**
-     * Wifi fallback: call once the user has entered/confirmed the ESP32's IP.
-     * Cancels any previous network observation first - without this, tapping
-     * "Connect" more than once left earlier requestNetwork() registrations running
-     * alongside the new one, each independently restarting ServoBridge's websocket
-     * whenever its own onAvailable fired, which looked like random servo jitter.
-     */
-    fun connectToEsp(ip: String) {
-        espIp = ip
-        networkJob?.cancel()
+    /** BLE alternative to USB - see BleServoBridge's doc. */
+    fun connectBle() {
         activeLink?.stop()
-        activeLink = servoBridge
-        onStatus?.invoke("requesting wifi network…")
-        networkJob = serviceScope.launch {
-            networkBinder.observe().collect { state ->
-                when (state) {
-                    is EspWifiNetworkBinder.State.Requesting ->
-                        onStatus?.invoke("requesting wifi network…")
-                    is EspWifiNetworkBinder.State.Available -> {
-                        onStatus?.invoke("wifi network acquired")
-                        servoBridge.start(state.network, espIp)
-                    }
-                    is EspWifiNetworkBinder.State.Lost -> {
-                        onStatus?.invoke("wifi network lost")
-                        servoBridge.stop()
-                    }
-                }
-            }
-        }
+        activeLink = bleServoBridge
+        bleServoBridge.start()
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -746,8 +701,8 @@ class VehicleForegroundService : Service() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(usbAttachReceiver) }
-        servoBridge.stop()
         usbServoBridge.stop()
+        bleServoBridge.stop()
         controlLink.close()
         videoSender.stop()
         audioSender.stop()

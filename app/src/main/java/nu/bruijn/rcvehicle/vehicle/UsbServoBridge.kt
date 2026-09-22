@@ -14,6 +14,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -59,7 +61,7 @@ class UsbServoBridge(
     minUs: Int = 1000,
     maxUs: Int = 2000,
     failsafeTimeoutMs: Long = 300,
-) : ServoLink(steerChannel, throttleChannel, centerUs, minUs, maxUs, failsafeTimeoutMs) {
+) : ServoLink(steerChannel, throttleChannel, centerUs, minUs, maxUs, failsafeTimeoutMs), ServoLinkCommands {
 
     private var port: UsbSerialPort? = null
     private var permissionReceiver: BroadcastReceiver? = null
@@ -305,32 +307,6 @@ class UsbServoBridge(
         }
     }
 
-    /** Asks the board what firmware version it's running - "GETVERSION" -> "VERSION=<x.xx>". */
-    fun checkFirmwareVersion(onResult: (version: String?) -> Unit) {
-        val p = port
-        if (p == null) {
-            onResult(null)
-            return
-        }
-        scope.launch {
-            val previousHandler = onLineReceived
-            val result = CompletableDeferred<String?>()
-            onLineReceived = { line ->
-                if (line.startsWith("VERSION=")) result.complete(line.removePrefix("VERSION=")) else previousHandler?.invoke(line)
-            }
-            startReading()
-            try {
-                synchronized(writeLock) { p.write("GETVERSION\n".toByteArray(), 200) }
-                onResult(withTimeoutOrNull(3000) { result.await() })
-            } catch (_: Exception) {
-                onResult(null)
-            } finally {
-                onLineReceived = previousHandler
-                stopReading()
-            }
-        }
-    }
-
     /** Asks the board which channels its own Joystick X/Y are currently configured
      * for - "GETJOYCHANNELS" -> "JOYCHANNELS=<steer>,<throttle>" - see
      * ServoLink.setChannels()'s doc for why. Called automatically once per
@@ -444,83 +420,38 @@ class UsbServoBridge(
         }
     }
 
-    /**
-     * Flashes [data] (a full firmware.bin) onto the board over this same USB-serial
-     * connection - see the firmware's usbFirmwareUpdate() (firmwareUpdate.h) for the
-     * other end. Pauses the failsafe watchdog for the duration: it would otherwise
-     * keep firing neutral "PosJ…" writes into the same byte stream the firmware
-     * binary is being sent over, corrupting the image. Restarts it afterwards
-     * regardless of outcome - if the board rebooted (success case), the underlying
-     * USB-serial bridge chip stays enumerated across that (only the ESP32 MCU
-     * itself resets, not the USB chip), so this same `port` keeps working once the
-     * board finishes booting back up a couple seconds later.
-     */
-    fun flashFirmware(data: ByteArray, onProgress: (written: Int, total: Int) -> Unit, onResult: (success: Boolean, message: String) -> Unit) {
-        val p = port
-        if (p == null) {
-            onResult(false, "not connected")
-            return
+    // sendCommand() is NOT safe for concurrent callers on its own - they'd all share this one
+    // onLineReceived slot and the single readJob started/stopped by startReading()/stopReading(),
+    // so two overlapping calls can steal each other's reply or restore onLineReceived out of
+    // order. Confirmed on real hardware as a genuine bug: the now-removed native servo-settings
+    // screen fired several of these back to back (its own initial channel/joystick-links/wifi
+    // load, or just two button taps close together), and whichever call lost the race got
+    // someone else's reply, a timeout, or clobbered the "restore previous handler" chain -
+    // directly matching the reported symptom (channel buttons working sometimes, joystick rows
+    // going blank, previously populated data disappearing on a later reload) and, worse, real
+    // EEPROM writes landing on the wrong channel. A mutex here, not per-caller
+    // coordination, is the fix - every call site (present or future) gets this for free.
+    private val sendCommandMutex = Mutex()
+
+    override suspend fun sendCommand(command: String, timeoutMs: Long): CommandResult = sendCommandMutex.withLock {
+        val p = port ?: return@withLock CommandResult.Error("not connected")
+        val previousHandler = onLineReceived
+        val result = CompletableDeferred<CommandResult>()
+        onLineReceived = { line ->
+            when {
+                line.startsWith("ERROR:") -> result.complete(CommandResult.Error(line.removePrefix("ERROR:")))
+                else -> result.complete(CommandResult.Ok(line))
+            }
         }
-        stopWatchdog()
-        scope.launch {
-            val previousHandler = onLineReceived
-            val result = CompletableDeferred<Pair<Boolean, String>>()
-            onLineReceived = { line ->
-                when {
-                    line == "OTAOK" -> result.complete(true to "update installed, vehicle rebooting")
-                    line.startsWith("OTAERROR:") -> result.complete(false to line.removePrefix("OTAERROR:"))
-                    else -> previousHandler?.invoke(line)
-                }
-            }
-            try {
-                // Purge stale bytes sitting in the CP210x's own hardware FIFOs before this
-                // attempt sends anything - the same long-lived `port` is reused across
-                // retries (nothing disconnects/reconnects between them), so leftover bytes
-                // from a previous failed/aborted attempt could otherwise prepend themselves
-                // onto this one and corrupt it from the first bytes.
-                runCatching { p.purgeHwBuffers(true, true) }
-
-                // MD5 rides along so the board can verify the image actually arrived intact
-                // (Update.setMD5(), firmwareUpdate.h) - this link is a home-rolled raw byte
-                // stream with no error detection of its own, unlike the wifi upload path's
-                // TCP.
-                val md5Hex = java.security.MessageDigest.getInstance("MD5").digest(data)
-                    .joinToString("") { "%02x".format(it) }
-                synchronized(writeLock) { p.write("OTAUPDATE=${data.size}:$md5Hex\n".toByteArray(), 500) }
-
-                // Deliberately no baud-rate bump for the transfer itself: tried both 921600
-                // and 460800, both reliably corrupted the transfer a few KB in ("wrong magic
-                // byte") on this specific CP210x+ESP32 pairing, no matter how carefully the
-                // switch-over handshake was synchronized (an OTAREADY/OTAGO exchange, ruling
-                // out a simple timing race) or how much read/write concurrency was removed
-                // around it. Staying at 115200 the whole way is slow (~1%/second) but is the
-                // version that actually completes - see firmwareUpdate.h's doc on the same
-                // choice, firmware-side.
-                //
-                // No concurrent read needed here either for the same reason it was removed
-                // from normal driving (see startReading()'s doc): the board sends nothing
-                // back until it's fully received the image, so reading is only turned on
-                // again afterwards, to catch OTAOK/OTAERROR.
-                var offset = 0
-                val chunkSize = 2048
-                while (offset < data.size) {
-                    val end = minOf(offset + chunkSize, data.size)
-                    synchronized(writeLock) { p.write(data.copyOfRange(offset, end), 5000) }
-                    offset = end
-                    onProgress(offset, data.size)
-                }
-                startReading()
-                // A few seconds' margin beyond the transfer itself for the board to finish
-                // flushing its last flash page and running Update.end()'s verification.
-                val outcome = withTimeoutOrNull(30_000) { result.await() }
-                if (outcome != null) onResult(outcome.first, outcome.second) else onResult(false, "no response from board (timed out)")
-            } catch (e: Exception) {
-                onResult(false, "write failed: ${e.message}")
-            } finally {
-                onLineReceived = previousHandler
-                stopReading()
-                if (port != null) startWatchdog()
-            }
+        startReading()
+        try {
+            synchronized(writeLock) { p.write("$command\n".toByteArray(), 200) }
+            withTimeoutOrNull(timeoutMs) { result.await() } ?: CommandResult.Timeout
+        } catch (e: Exception) {
+            CommandResult.Error(e.message ?: "write failed")
+        } finally {
+            onLineReceived = previousHandler
+            stopReading()
         }
     }
 
