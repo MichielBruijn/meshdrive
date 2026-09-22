@@ -18,6 +18,9 @@
     <string name="vehicle_debug_throttle">Throttle</string>
     <string name="vehicle_rtc_title">Debug: control link over Yggdrasil</string>
     <string name="vehicle_own_address_detecting">Own Yggdrasil address: searching…</string>
+    <string name="vehicle_private_key_title">Yggdrasil private key (128 hex chars)</string>
+    <string name="vehicle_private_key_hint">no identity generated yet</string>
+    <string name="vehicle_apply_private_key">Apply (restarts Yggdrasil)</string>
     <string name="vehicle_start_listening">Listen</string>
     <string name="vehicle_listening">Listening</string>
     <string name="controller_setup_title">Connect to vehicle</string>

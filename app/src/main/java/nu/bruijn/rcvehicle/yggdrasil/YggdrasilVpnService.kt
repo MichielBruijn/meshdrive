@@ -3,6 +3,7 @@ package nu.bruijn.rcvehicle.yggdrasil
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
@@ -130,6 +131,44 @@ class YggdrasilVpnService : VpnService() {
          * doc for why the session itself reporting "connected" again isn't
          * enough on its own. 0L if never connected yet. */
         val lastConnectAtMs: Long get() = instance?.lastConnectAtMs ?: 0L
+
+        private const val CONFIG_FILE_NAME = "yggdrasil-config.json"
+
+        /** Path to the persisted identity/config file - a plain function of [Context], not this
+         * (possibly not-running) service instance, so debug UI can read/edit the identity
+         * without needing a live session. Same file the instance-side buildConfig() reads. */
+        fun configFile(context: Context) = File(context.filesDir, CONFIG_FILE_NAME)
+
+        /** Current node's private key, hex-encoded (128 hex chars - ed25519.PrivateKey's 64 raw
+         * bytes, config.go's KeyBytes.MarshalJSON()) - null if no identity has been generated
+         * yet (Yggdrasil never started on this install) or the file's unreadable/corrupt. */
+        fun currentPrivateKeyHex(context: Context): String? {
+            val file = configFile(context)
+            if (!file.exists()) return null
+            return runCatching {
+                JSONObject(file.readText(Charsets.UTF_8)).optString("PrivateKey").takeIf { it.isNotEmpty() }
+            }.getOrNull()
+        }
+
+        /** Overwrites the persisted identity with [hex] - generates a fresh base config first
+         * if none exists yet (a fresh install that's never started Yggdrasil). Returns false
+         * without writing anything if [hex] isn't a well-formed key. Takes effect on the next
+         * [YggdrasilController.start] - if a session is currently running, stop it first (this
+         * doesn't do that itself, same as every other config change here - see buildConfig()'s
+         * doc). */
+        fun setPrivateKeyHex(context: Context, hex: String): Boolean {
+            val normalized = hex.trim()
+            if (normalized.length != 128 || normalized.any { it.lowercaseChar() !in "0123456789abcdef" }) return false
+            val file = configFile(context)
+            val json = if (file.exists()) {
+                JSONObject(file.readText(Charsets.UTF_8))
+            } else {
+                JSONObject(String(Mobile.generateConfigJSON(), Charsets.UTF_8))
+            }
+            json.put("PrivateKey", normalized.lowercase())
+            file.writeText(json.toString(), Charsets.UTF_8)
+            return true
+        }
     }
 
     private val yggdrasil = Yggdrasil()
@@ -208,7 +247,7 @@ class YggdrasilVpnService : VpnService() {
         super.onRevoke()
     }
 
-    private fun configFile() = File(filesDir, "yggdrasil-config.json")
+    private fun configFile() = configFile(this)
 
     /**
      * Loads the persisted config (generating+saving a fresh one, with a new

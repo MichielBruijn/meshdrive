@@ -291,6 +291,30 @@ class VehicleActivity : AppCompatActivity() {
         recheckYggdrasil = ::checkYggdrasil
         checkYggdrasil()
 
+        // Debug-only: view/edit the persisted Yggdrasil identity directly - see
+        // YggdrasilController.currentPrivateKeyHex()/setPrivateKeyHex()'s doc. Pre-filled with
+        // whatever identity already exists (same "show real state, not a blank field"
+        // reasoning as the removed native servo-settings screen's channel pickers), blank/
+        // hint-only on a fresh install that's never started Yggdrasil yet.
+        val editPrivateKey = findViewById<EditText>(R.id.editYggdrasilPrivateKey)
+        val textPrivateKeyResult = findViewById<TextView>(R.id.textPrivateKeyResult)
+        editPrivateKey.setText(YggdrasilController.currentPrivateKeyHex(this))
+        findViewById<Button>(R.id.buttonApplyPrivateKey).setOnClickListener {
+            val hex = editPrivateKey.text.toString()
+            if (!YggdrasilController.setPrivateKeyHex(this, hex)) {
+                textPrivateKeyResult.text = "Invalid key - must be 128 hex characters"
+                return@setOnClickListener
+            }
+            textPrivateKeyResult.text = "Applied - restarting Yggdrasil…"
+            YggdrasilController.stop(this)
+            lifecycleScope.launch {
+                val candidates = ModePrefs(applicationContext).yggdrasilPeerCandidates.first()
+                YggdrasilController.start(this@VehicleActivity, candidates)
+                checkYggdrasil()
+                textPrivateKeyResult.text = "Applied"
+            }
+        }
+
         // Purely a display refresh (which peer, its latency) - harmless if it
         // stops when this Activity is destroyed, unlike the network-churn
         // watch loop that used to live here too. That loop (and the

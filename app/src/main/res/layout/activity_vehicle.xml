@@ -169,6 +169,33 @@
             android:textIsSelectable="true"
             android:text="@string/vehicle_own_address_detecting" />
 
+        <!-- Pre-filled with the current identity (if one exists yet) - editing and tapping
+             Apply overwrites it and restarts Yggdrasil, same "show real state, not a blank
+             field" reasoning as the removed native servo-settings screen's channel pickers. -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/vehicle_private_key_title" />
+        <EditText
+            android:id="@+id/editYggdrasilPrivateKey"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textSize="12sp"
+            android:inputType="textNoSuggestions"
+            android:hint="@string/vehicle_private_key_hint" />
+        <Button
+            android:id="@+id/buttonApplyPrivateKey"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/vehicle_apply_private_key" />
+        <TextView
+            android:id="@+id/textPrivateKeyResult"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
         <!-- Candidate peer pool with latency-probe results, refreshed on
              PeerMonitor's own cadence - see YggdrasilController.peerStatuses(). -->
         <TextView

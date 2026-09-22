@@ -199,6 +199,7 @@ class BleServoBridge(
             log("BLE ready")
             onConnected?.invoke(true)
             startWatchdog()
+            resolveBoardConfig()
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
@@ -214,12 +215,16 @@ class BleServoBridge(
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             if (characteristic.uuid != TX_UUID) return
             val value = characteristic.value ?: return
+            Log.d("BleServoBridge", "notify: ${value.size} bytes, hasHandler=${onLineReceived != null}")
             for (b in value) {
                 when (val c = b.toInt().toChar()) {
                     '\n' -> {
                         val line = lineBuffer.toString().trim()
                         lineBuffer.clear()
-                        if (line.isNotEmpty()) onLineReceived?.invoke(line)
+                        if (line.isNotEmpty()) {
+                            Log.d("BleServoBridge", "line: $line")
+                            onLineReceived?.invoke(line)
+                        }
                     }
                     '\r' -> {}
                     else -> lineBuffer.append(c)
@@ -265,6 +270,51 @@ class BleServoBridge(
         return true
     }
 
+    /**
+     * Queries the board's real Joystick X/Y channels and calibration on every fresh connect -
+     * same reasoning as UsbServoBridge's checkJoystickChannels()/checkCalibration(). The
+     * constructor's steerChannel=3/throttleChannel=4 defaults are just a starting guess, and
+     * drift on the board's own EEPROM (a settings change, a fresh-flash/erase) would otherwise
+     * silently leave this class driving the wrong physical channel with no way to notice or
+     * self-correct - confirmed on real hardware as exactly this: throttle stopped responding
+     * after the board's channels drifted to 0/3, and BLE had no way to detect or recover from
+     * it, unlike USB. Wasn't reachable before the BLE reply newline fix (controlReply() in
+     * src.ino) either - every one of these commands timed out silently on real hardware until
+     * then. Up to 3 attempts each, same reasoning as UsbServoBridge's own retry loop: a cold
+     * BLE connect's very first command can race notification setup (the CCCD write/MTU
+     * negotiation above are fire-and-forget, not awaited).
+     */
+    private fun resolveBoardConfig() {
+        readyToSend = false
+        scope.launch {
+            var channels: Pair<Int, Int>? = null
+            for (attempt in 1..3) {
+                val result = sendCommand("GETJOYCHANNELS", 1500)
+                if (result is CommandResult.Ok && result.response.startsWith("JOYCHANNELS=")) {
+                    val parts = result.response.removePrefix("JOYCHANNELS=").split(",")
+                    val steer = parts.getOrNull(0)?.toIntOrNull()
+                    val throttle = parts.getOrNull(1)?.toIntOrNull()
+                    if (steer != null && throttle != null) channels = steer to throttle
+                }
+                if (channels != null) break
+            }
+            channels?.let { (steer, throttle) -> setChannels(steer, throttle) }
+
+            var calibration: List<Int>? = null
+            for (attempt in 1..3) {
+                val result = sendCommand("GETCALIBRATION", 1500)
+                if (result is CommandResult.Ok && result.response.startsWith("CALIBRATION=")) {
+                    val parts = result.response.removePrefix("CALIBRATION=").split(",").mapNotNull { it.toIntOrNull() }
+                    if (parts.size == 6) calibration = parts
+                }
+                if (calibration != null) break
+            }
+            calibration?.let { c -> setCalibration(c[0], c[1], c[2], c[3], c[4], c[5]) }
+
+            readyToSend = true
+        }
+    }
+
     // Same reasoning as UsbServoBridge's own sendCommandMutex: this shares one onLineReceived
     // slot across all callers, so concurrent calls can steal each other's reply or restore the
     // handler out of order - a dedicated mutex around the whole call (not just gattLock's own
@@ -273,6 +323,7 @@ class BleServoBridge(
     private val sendCommandMutex = Mutex()
 
     override suspend fun sendCommand(command: String, timeoutMs: Long): CommandResult = sendCommandMutex.withLock {
+        Log.d("BleServoBridge", "sendCommand: $command (gatt=${gatt != null}, rx=${rxCharacteristic != null})")
         val g = gatt ?: return@withLock CommandResult.Error("not connected")
         val rx = rxCharacteristic ?: return@withLock CommandResult.Error("not connected")
         val previousHandler = onLineReceived
@@ -285,8 +336,11 @@ class BleServoBridge(
         }
         try {
             val sent = gattLock.withLock { writeChunked(g, rx, "$command\n".toByteArray(), BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) }
+            Log.d("BleServoBridge", "sendCommand: $command write sent=$sent")
             if (!sent) return@withLock CommandResult.Error("write failed")
-            withTimeoutOrNull(timeoutMs) { result.await() } ?: CommandResult.Timeout
+            val outcome = withTimeoutOrNull(timeoutMs) { result.await() } ?: CommandResult.Timeout
+            Log.d("BleServoBridge", "sendCommand: $command outcome=$outcome")
+            outcome
         } finally {
             onLineReceived = previousHandler
         }

@@ -52,4 +52,14 @@ object YggdrasilController {
     /** Latest latency-probe results across the whole candidate pool, refreshed
      * on PeerMonitor's own cadence - not re-measured on demand by calling this. */
     fun peerStatuses(): List<PeerLatencyProbe.Status> = YggdrasilVpnService.peerStatuses
+
+    /** Current node's private key, hex-encoded - null if no identity exists yet
+     * on this install. See YggdrasilVpnService.currentPrivateKeyHex()'s doc. */
+    fun currentPrivateKeyHex(context: Context): String? = YggdrasilVpnService.currentPrivateKeyHex(context)
+
+    /** Overwrites the persisted identity with [hex] - false if it's not a
+     * well-formed key. Caller must [stop] first if a session is currently
+     * running, then [start] again for the new identity to take effect - see
+     * YggdrasilVpnService.setPrivateKeyHex()'s doc. */
+    fun setPrivateKeyHex(context: Context, hex: String): Boolean = YggdrasilVpnService.setPrivateKeyHex(context, hex)
 }
