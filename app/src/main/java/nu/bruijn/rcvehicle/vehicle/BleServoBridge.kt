@@ -33,13 +33,11 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 class BleServoBridge(
     private val context: Context,
-    steerChannel: Int = 3,
-    throttleChannel: Int = 4,
     centerUs: Int = 1500,
     minUs: Int = 1000,
     maxUs: Int = 2000,
     failsafeTimeoutMs: Long = 300,
-) : ServoLink(steerChannel, throttleChannel, centerUs, minUs, maxUs, failsafeTimeoutMs), ServoLinkCommands {
+) : ServoLink(centerUs, minUs, maxUs, failsafeTimeoutMs), ServoLinkCommands {
 
     companion object {
         private val SERVICE_UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
@@ -272,17 +270,20 @@ class BleServoBridge(
 
     /**
      * Queries the board's real Joystick X/Y channels and calibration on every fresh connect -
-     * same reasoning as UsbServoBridge's checkJoystickChannels()/checkCalibration(). The
-     * constructor's steerChannel=3/throttleChannel=4 defaults are just a starting guess, and
-     * drift on the board's own EEPROM (a settings change, a fresh-flash/erase) would otherwise
-     * silently leave this class driving the wrong physical channel with no way to notice or
-     * self-correct - confirmed on real hardware as exactly this: throttle stopped responding
-     * after the board's channels drifted to 0/3, and BLE had no way to detect or recover from
-     * it, unlike USB. Wasn't reachable before the BLE reply newline fix (controlReply() in
-     * src.ino) either - every one of these commands timed out silently on real hardware until
-     * then. Up to 3 attempts each, same reasoning as UsbServoBridge's own retry loop: a cold
-     * BLE connect's very first command can race notification setup (the CCCD write/MTU
-     * negotiation above are fire-and-forget, not awaited).
+     * same reasoning as UsbServoBridge's checkJoystickChannels()/checkCalibration(). Per direct
+     * request, this app must never guess/hardcode which physical channel steer or throttle is
+     * on - readyToSend only ever flips true once the board itself has confirmed them; if it
+     * can't (old firmware, no reply), this bridge just stays not-ready rather than falling back
+     * to anything. Confirmed on real hardware as a genuine, safety-relevant bug without this at
+     * all: channel drift on the board's own EEPROM (a settings change, a fresh-flash/erase)
+     * silently left this class driving the wrong physical channel with no way to notice or
+     * self-correct - throttle stopped responding after the board's channels drifted to 0/3, and
+     * BLE had no way to detect or recover from it, unlike USB. Wasn't reachable before the BLE
+     * reply newline fix (controlReply() in src.ino) either - every one of these commands timed
+     * out silently on real hardware until then. Up to 3 attempts each, same reasoning as
+     * UsbServoBridge's own retry loop: a cold BLE connect's very first command can race
+     * notification setup (the CCCD write/MTU negotiation above are fire-and-forget, not
+     * awaited).
      */
     private fun resolveBoardConfig() {
         readyToSend = false
@@ -298,7 +299,13 @@ class BleServoBridge(
                 }
                 if (channels != null) break
             }
-            channels?.let { (steer, throttle) -> setChannels(steer, throttle) }
+            if (channels == null) {
+                log("could not read board's servo channels - control disabled")
+                return@launch
+            }
+            val (steer, throttle) = channels
+            setChannels(steer, throttle)
+            log("using board's channels: steer=CH${steer + 1} throttle=CH${throttle + 1}")
 
             var calibration: List<Int>? = null
             for (attempt in 1..3) {
@@ -309,6 +316,9 @@ class BleServoBridge(
                 }
                 if (calibration != null) break
             }
+            // null here just means older firmware / no reply - the generic 1000/1500/2000
+            // default stays (calibration range, unlike the channel itself, isn't the "wrong
+            // physical output" hazard the channel-guessing concern was about).
             calibration?.let { c -> setCalibration(c[0], c[1], c[2], c[3], c[4], c[5]) }
 
             readyToSend = true

@@ -360,17 +360,18 @@ class ModePrefs(private val context: Context) {
     }
 
     /**
-     * The ESP32's own configured Joystick X/Y channels and steer/throttle µs
-     * calibration, as last discovered over USB (UsbServoBridge.checkJoystickChannels()/
-     * checkCalibration()) - persisted (not just held in the live instance) and
-     * shared with BleServoBridge, which has no async query of its own for this.
-     * Defaults here match ServoLink's generic constructor values (steer=3/
-     * throttle=4, 1000/1500/2000µs), so a board that's never been resolved over
-     * USB yet behaves exactly as before this existed.
+     * The ESP32's own configured Joystick X/Y channels, as last discovered over USB or BLE
+     * (checkJoystickChannels()/resolveBoardConfig()) - persisted (not just held in the live
+     * instance) as a head start for whichever bridge connects next, e.g. BLE reusing what USB
+     * already found. Null if never actually resolved yet - per direct request, nothing here
+     * ever falls back to a guessed/hardcoded channel; a null just means the caller has nothing
+     * to pre-seed with, same as a completely fresh install.
      */
     data class BoardChannels(val steer: Int, val throttle: Int)
-    val boardChannels: Flow<BoardChannels> = context.dataStore.data.map {
-        BoardChannels(it[Keys.BOARD_STEER_CHANNEL] ?: 3, it[Keys.BOARD_THROTTLE_CHANNEL] ?: 4)
+    val boardChannels: Flow<BoardChannels?> = context.dataStore.data.map {
+        val steer = it[Keys.BOARD_STEER_CHANNEL]
+        val throttle = it[Keys.BOARD_THROTTLE_CHANNEL]
+        if (steer != null && throttle != null) BoardChannels(steer, throttle) else null
     }
     suspend fun setBoardChannels(steer: Int, throttle: Int) {
         context.dataStore.edit { prefs ->

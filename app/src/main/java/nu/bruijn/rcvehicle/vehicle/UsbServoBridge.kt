@@ -55,13 +55,11 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 class UsbServoBridge(
     private val context: Context,
-    steerChannel: Int = 3,
-    throttleChannel: Int = 4,
     centerUs: Int = 1500,
     minUs: Int = 1000,
     maxUs: Int = 2000,
     failsafeTimeoutMs: Long = 300,
-) : ServoLink(steerChannel, throttleChannel, centerUs, minUs, maxUs, failsafeTimeoutMs), ServoLinkCommands {
+) : ServoLink(centerUs, minUs, maxUs, failsafeTimeoutMs), ServoLinkCommands {
 
     private var port: UsbSerialPort? = null
     private var permissionReceiver: BroadcastReceiver? = null
@@ -189,21 +187,23 @@ class UsbServoBridge(
             onStateChange?.invoke("USB serial connected")
             onConnected?.invoke(true)
             startWatchdog()
-            // Held false until both queries below resolve (found or confirmed
-            // unknown) - see readyToSend's doc in ServoLink for why sendControl()
-            // must not fire on the constructor's placeholder channels/calibration
-            // while these round-trips are still in flight.
+            // Held false until the board's real channels are confirmed below - see
+            // readyToSend's doc in ServoLink: per direct request, this must never fire on a
+            // guessed/hardcoded channel, only ever the board's own actual configured ones.
             readyToSend = false
             checkJoystickChannels { steer, throttle ->
                 if (connectionGeneration.get() != myGeneration) return@checkJoystickChannels
-                if (steer != null && throttle != null) {
-                    setChannels(steer, throttle)
-                    onStateChange?.invoke("using board's channels: steer=CH${steer + 1} throttle=CH${throttle + 1}")
-                    onChannelsResolved?.invoke(steer, throttle)
+                if (steer == null || throttle == null) {
+                    // Older firmware that doesn't know GETJOYCHANNELS, or no reply in time -
+                    // stays not-ready rather than guessing a channel. No retry loop here
+                    // beyond checkJoystickChannels()'s own 3 attempts - a stop()/start() cycle
+                    // (unplug/replug, or the app's own reconnect) tries again from scratch.
+                    onStateChange?.invoke("could not read board's servo channels - control disabled")
+                    return@checkJoystickChannels
                 }
-                // null means an older firmware that doesn't know GETJOYCHANNELS,
-                // or no reply in time - the constructor defaults stay in effect,
-                // same as before this existed.
+                setChannels(steer, throttle)
+                onStateChange?.invoke("using board's channels: steer=CH${steer + 1} throttle=CH${throttle + 1}")
+                onChannelsResolved?.invoke(steer, throttle)
                 checkCalibration { calibration ->
                     if (connectionGeneration.get() != myGeneration) return@checkCalibration
                     if (calibration != null) {
@@ -212,8 +212,10 @@ class UsbServoBridge(
                         onStateChange?.invoke("using board's calibration: steer=$steerMin/$steerCenter/$steerMax throttle=$throttleMin/$throttleCenter/$throttleMax")
                         onCalibrationResolved?.invoke(calibration)
                     }
-                    // null means an older firmware that doesn't know GETCALIBRATION,
-                    // or no reply in time - the generic 1000/1500/2000 default stays.
+                    // null means an older firmware that doesn't know GETCALIBRATION, or no
+                    // reply in time - the generic 1000/1500/2000 default stays (calibration
+                    // range, unlike the channel itself, isn't the "wrong physical output"
+                    // hazard the user's channel-guessing concern was about).
                     readyToSend = true
                 }
             }

@@ -15,13 +15,16 @@ import kotlinx.coroutines.launch
  * PosJ writes actually reach the board - differs between the two transports.
  */
 abstract class ServoLink(
-    private var steerChannel: Int,
-    private var throttleChannel: Int,
     centerUs: Int,
     minUs: Int,
     maxUs: Int,
     private val failsafeTimeoutMs: Long,
 ) {
+    // Null until setChannels() is called with the board's own real, queried values - per
+    // direct request, this app must never guess/hardcode which physical channel steer or
+    // throttle is on. sendControl()/sendNeutral() below are no-ops while either is null.
+    private var steerChannel: Int? = null
+    private var throttleChannel: Int? = null
     protected val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var lastControlAtMs = 0L
     private var watchdogJob: Job? = null
@@ -39,19 +42,15 @@ abstract class ServoLink(
 
     var onStateChange: ((String) -> Unit)? = null
 
-    // Stays true for BleServoBridge (never touches this, no async channel query
-    // exists there). UsbServoBridge sets this false right after
-    // connecting and back to true once checkJoystickChannels()'s USB round-trip
-    // resolves (steer/throttle found or confirmed unknown) - closes a real race
-    // confirmed on hardware: sendControl() could fire on the constructor's
-    // placeholder channels (3/4) before setChannels() overwrote them with the
-    // board's actual configured channels, since a remote controller can already
-    // be sending control frames the moment onConnected(true) fires, well before
-    // the ~1s GETJOYCHANNELS reply lands. Symptom matched exactly: throttle
-    // worked immediately (its placeholder happened to match this board's real
-    // channel), steering didn't (its placeholder didn't) - and it self-corrected
-    // within about a second once the reply arrived.
-    protected var readyToSend = true
+    // False until both UsbServoBridge and BleServoBridge have actually confirmed the board's
+    // real Joystick X/Y channels (their own checkJoystickChannels()/resolveBoardConfig()) -
+    // only ever flips true once setChannels() has been called with real values, never as a
+    // fallback. Confirmed on real hardware as a real race even before that principle: without
+    // gating sendControl() somehow, it could fire on the constructor's old placeholder channels
+    // (3/4) before setChannels() overwrote them with the board's actual configured channels,
+    // since a remote controller can already be sending control frames the moment
+    // onConnected(true) fires, well before the GETJOYCHANNELS reply lands.
+    protected var readyToSend = false
 
     /** Overrides the channel mapping after construction - used once
      * UsbServoBridge has queried the board's own configured Joystick X/Y
@@ -98,9 +97,11 @@ abstract class ServoLink(
     /** steer/throttle normalized to -1.0..1.0. */
     fun sendControl(steer: Float, throttle: Float) {
         if (!readyToSend) return
+        val sc = steerChannel ?: return
+        val tc = throttleChannel ?: return
         lastControlAtMs = System.currentTimeMillis()
-        send(steerChannel, toUs(steer, steerCenterUs, steerMinUs, steerMaxUs))
-        send(throttleChannel, toUs(throttle, throttleCenterUs, throttleMinUs, throttleMaxUs))
+        send(sc, toUs(steer, steerCenterUs, steerMinUs, steerMaxUs))
+        send(tc, toUs(throttle, throttleCenterUs, throttleMinUs, throttleMaxUs))
     }
 
     private fun toUs(value: Float, centerUs: Int, minUs: Int, maxUs: Int): Int {
@@ -113,8 +114,10 @@ abstract class ServoLink(
     }
 
     protected fun sendNeutral() {
-        send(steerChannel, steerCenterUs)
-        send(throttleChannel, throttleCenterUs)
+        val sc = steerChannel ?: return
+        val tc = throttleChannel ?: return
+        send(sc, steerCenterUs)
+        send(tc, throttleCenterUs)
     }
 
     // App-side failsafe, independent of the firmware's own >500ms one (v1.15): a

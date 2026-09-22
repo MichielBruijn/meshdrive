@@ -541,12 +541,14 @@ class VehicleForegroundService : Service() {
         usbServoBridge.onStateChange = { status -> onStatus?.invoke(status) }
         bleServoBridge.onStateChange = { status -> onStatus?.invoke(status) }
 
-        // Keep BLE in sync with whatever USB last discovered, from a previous
-        // session or this one.
+        // Keep BLE in sync with whatever USB last discovered, from a previous session or this
+        // one - a head start only: readyToSend stays false regardless (see ServoLink's doc)
+        // until whichever bridge actually connects confirms it fresh with the board itself.
         serviceScope.launch {
-            val channels = modePrefs.boardChannels.first()
-            usbServoBridge.setChannels(channels.steer, channels.throttle)
-            bleServoBridge.setChannels(channels.steer, channels.throttle)
+            modePrefs.boardChannels.first()?.let { channels ->
+                usbServoBridge.setChannels(channels.steer, channels.throttle)
+                bleServoBridge.setChannels(channels.steer, channels.throttle)
+            }
             val calibration = modePrefs.boardCalibration.first()
             usbServoBridge.setCalibration(
                 calibration.steerMin, calibration.steerCenter, calibration.steerMax,
