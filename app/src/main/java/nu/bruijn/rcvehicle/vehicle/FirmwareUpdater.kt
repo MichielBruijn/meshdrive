@@ -17,10 +17,8 @@ import okhttp3.Request
  * No JSON library needed for two flat string fields - same reasoning as the
  * firmware's own jsonStringField() helper.
  *
- * RELEASES_API_URL points at esp32-c3-servo-controller (made public per direct
- * request, specifically so this app can fetch its releases without embedding a
- * GitHub token in the APK) - not esp32-servo-tester, the classic-board repo this
- * pointed at until a real-hardware test caught it: the wrong architecture's binary
+ * The repo is picked per [Board] - both are public so no GitHub token is needed in
+ * the APK. Never mix them up: a real-hardware test caught the wrong architecture's binary
  * (classic board, Xtensa) uploaded over wifi byte-for-byte successfully, then
  * Update.end() correctly rejected it as an invalid image on this RISC-V chip -
  * "Write failed: N/N bytes, end=0, ...".
@@ -33,19 +31,30 @@ import okhttp3.Request
  * from inside that same network with no obvious reason why.
  */
 object FirmwareUpdater {
-    private const val RELEASES_API_URL =
-        "https://api.github.com/repos/MichielBruijn/esp32-c3-servo-controller/releases/latest"
     private const val ASSET_NAME = "firmware.bin"
 
-    data class Release(val version: String, val downloadUrl: String)
+    /** Which board is on the other end - picked from its own GETVERSION reply, since both
+     * speak the same protocol but need their own architecture's binary and AP name. */
+    enum class Board(val repo: String, val apSsid: String) {
+        C3_MINI("MichielBruijn/esp32-c3-servo-controller", "MespDrive"),
+        CLASSIC("MichielBruijn/esp32-servo-tester", "ServoTester");
+
+        companion object {
+            // C3 codeVersion always carries "-c3mini" ("0.2-c3mini"); classic is plain ("1.39").
+            fun forVersion(version: String): Board =
+                if (version.contains("c3", ignoreCase = true)) C3_MINI else CLASSIC
+        }
+    }
+
+    data class Release(val version: String, val downloadUrl: String, val board: Board)
 
     private fun client(network: Network?): OkHttpClient =
         OkHttpClient.Builder().apply { network?.let { socketFactory(it.socketFactory) } }.build()
 
     /** Blocking - call from a background thread/coroutine. Returns null on any failure. */
-    fun fetchLatestRelease(network: Network? = null): Release? {
+    fun fetchLatestRelease(board: Board, network: Network? = null): Release? {
         val request = Request.Builder()
-            .url(RELEASES_API_URL)
+            .url("https://api.github.com/repos/${board.repo}/releases/latest")
             .header("User-Agent", "esp32-rc-fpv-control") // GitHub's API rejects requests with no User-Agent
             .build()
         return try {
@@ -56,7 +65,7 @@ object FirmwareUpdater {
                 val nameIdx = body.indexOf("\"name\":\"$ASSET_NAME\"")
                 if (nameIdx < 0) return null
                 val downloadUrl = jsonStringField(body, "browser_download_url", nameIdx) ?: return null
-                Release(tag, downloadUrl)
+                Release(tag, downloadUrl, board)
             }
         } catch (_: Exception) {
             null

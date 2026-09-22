@@ -150,10 +150,13 @@ abstract class ServoLink(
 }
 
 /** Generic GET/SET command round-trip, implemented by both UsbServoBridge and
- * BleServoBridge. Any reply line other than "ERROR:..." resolves Ok(line) as-is
- * (callers strip their own expected prefix, e.g. "CHANNEL="); nothing in time -> Timeout. */
+ * BleServoBridge. "ERROR:..." resolves Error; otherwise, with [expectPrefix] null, the
+ * first line back resolves Ok(line) as-is (callers strip their own prefix, e.g.
+ * "VERSION="); with it set, only a line starting with it does - anything else the board
+ * prints meanwhile (boot banner right after a reset, "EEPROM written", ...) is skipped
+ * instead of being mistaken for the reply. Nothing in time -> Timeout. */
 interface ServoLinkCommands {
-    suspend fun sendCommand(command: String, timeoutMs: Long = 1500): CommandResult
+    suspend fun sendCommand(command: String, timeoutMs: Long = 1500, expectPrefix: String? = null): CommandResult
 }
 
 sealed class CommandResult {

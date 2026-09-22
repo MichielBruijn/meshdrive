@@ -17,6 +17,7 @@ import android.widget.EditText
 import android.widget.ImageView
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -72,6 +73,16 @@ class VehicleActivity : AppCompatActivity() {
     private var onBleConnectedChanged: ((Boolean) -> Unit)? = null
     private var isUsbConnected = false
 
+    // Firmware-update state - fields, not setUpFirmwareUpdateUi() locals, so the automatic
+    // check fired on every board connect (see checkForFirmwareUpdate()) shares them with the
+    // Check/Install buttons.
+    private var pendingRelease: FirmwareUpdater.Release? = null
+    private var pendingFirmware: ByteArray? = null
+    private var updateCheckInProgress = false
+    private var updateInstallInProgress = false
+    private var lastAutoCheckedBoardVersion: String? = null
+    private var lastAutoCheckAtMs = 0L
+
     // Set in onCreate - re-run from onResume so coming back from actually opening
     // Yggdrasil (buttonOpenYggdrasil) picks up the result automatically.
     private var recheckYggdrasil: (() -> Unit)? = null
@@ -89,11 +100,19 @@ class VehicleActivity : AppCompatActivity() {
             service?.onStatus = { status ->
                 runOnUiThread { findViewById<TextView>(R.id.textStatus).text = status }
             }
+            // Every (re)connect to the board, either transport, also checks it for a firmware
+            // update, per direct request - see checkForFirmwareUpdate()'s doc.
             service?.usbServoBridge?.onConnected = { connected ->
-                runOnUiThread { onUsbConnectedChanged?.invoke(connected) }
+                runOnUiThread {
+                    onUsbConnectedChanged?.invoke(connected)
+                    if (connected) checkForFirmwareUpdate(service?.usbServoBridge, auto = true)
+                }
             }
             service?.bleServoBridge?.onConnected = { connected ->
-                runOnUiThread { onBleConnectedChanged?.invoke(connected) }
+                runOnUiThread {
+                    onBleConnectedChanged?.invoke(connected)
+                    if (connected) checkForFirmwareUpdate(service?.bleServoBridge, auto = true)
+                }
             }
             // Same indirection as onUsbConnectedChanged above, same reason -
             // this ServiceConnection is a class-level field, constructed
@@ -458,64 +477,9 @@ class VehicleActivity : AppCompatActivity() {
         val buttonCheckUpdate = findViewById<Button>(R.id.buttonCheckUpdate)
         val buttonInstallUpdate = findViewById<Button>(R.id.buttonInstallUpdate)
         val textUpdateStatus = findViewById<TextView>(R.id.textUpdateStatus)
-        var pendingRelease: FirmwareUpdater.Release? = null
-        var pendingFirmware: ByteArray? = null
 
         buttonCheckUpdate.setOnClickListener {
-            buttonCheckUpdate.isEnabled = false
-            buttonInstallUpdate.visibility = View.GONE
-            pendingRelease = null
-            pendingFirmware = null
-            textUpdateStatus.text = "Checking board version…"
-            lifecycleScope.launch {
-                val link = service?.activeLink as? ServoLinkCommands
-                // Up to 3 attempts, not 1 - confirmed on real hardware as a real gap: a single
-                // shot right after connecting could race UsbServoBridge.openPort()'s own
-                // background checkJoystickChannels()/checkCalibration() round-trips for the
-                // same port's read stream (same underlying reasoning as their own retry loop's
-                // doc), showing "could not read board version" on the very first tap even
-                // though the board was genuinely connected.
-                var currentVersion: String? = null
-                if (link != null) {
-                    for (attempt in 1..3) {
-                        val result = withContext(Dispatchers.IO) { link.sendCommand("GETVERSION") }
-                        currentVersion = (result as? CommandResult.Ok)?.response?.removePrefix("VERSION=")
-                        if (currentVersion != null) break
-                    }
-                }
-                if (currentVersion == null) {
-                    textUpdateStatus.text = "Could not read board version - connect via USB or Bluetooth first"
-                    buttonCheckUpdate.isEnabled = true
-                    return@launch
-                }
-                textUpdateStatus.text = "Board is v$currentVersion, checking GitHub…"
-                val internet = withContext(Dispatchers.IO) { getInternetNetwork() }
-                val release = withContext(Dispatchers.IO) { FirmwareUpdater.fetchLatestRelease(internet) }
-                when {
-                    release == null -> {
-                        textUpdateStatus.text = "Board v$currentVersion - could not reach GitHub"
-                        buttonCheckUpdate.isEnabled = true
-                    }
-                    FirmwareUpdater.isNewer(release.version, currentVersion) -> {
-                        textUpdateStatus.text = "Downloading v${release.version}…"
-                        val bytes = withContext(Dispatchers.IO) { FirmwareUpdater.download(release.downloadUrl, internet) }
-                        buttonCheckUpdate.isEnabled = true
-                        if (bytes == null) {
-                            textUpdateStatus.text = "Update v${release.version} found, but download failed"
-                        } else {
-                            pendingRelease = release
-                            pendingFirmware = bytes
-                            textUpdateStatus.text = "v${release.version} downloaded. Connect your phone to the " +
-                                "board's \"MespDrive\" wifi (password 123456789), then tap Install."
-                            buttonInstallUpdate.visibility = View.VISIBLE
-                        }
-                    }
-                    else -> {
-                        textUpdateStatus.text = "Board v$currentVersion - up to date"
-                        buttonCheckUpdate.isEnabled = true
-                    }
-                }
-            }
+            checkForFirmwareUpdate(service?.activeLink as? ServoLinkCommands, auto = false)
         }
 
         // Installs over the board's own wifi AP (WifiFirmwareUpdater) - see this
@@ -528,16 +492,19 @@ class VehicleActivity : AppCompatActivity() {
             val bytes = pendingFirmware ?: return@setOnClickListener
             buttonInstallUpdate.isEnabled = false
             buttonCheckUpdate.isEnabled = false
-            textUpdateStatus.text = "Waiting for \"MespDrive\" wifi…"
+            updateInstallInProgress = true
+            val ssid = release.board.apSsid
+            textUpdateStatus.text = "Waiting for \"$ssid\" wifi…"
             lifecycleScope.launch {
-                val binder = EspWifiNetworkBinder(this@VehicleActivity)
+                val binder = EspWifiNetworkBinder(this@VehicleActivity, ssid)
                 val network = withTimeoutOrNull(20_000) {
                     binder.observe().filterIsInstance<EspWifiNetworkBinder.State.Available>().first().network
                 }
                 if (network == null) {
-                    textUpdateStatus.text = "Not connected to \"MespDrive\" - join it in wifi settings and try again"
+                    textUpdateStatus.text = "Not connected to \"$ssid\" - join it in wifi settings and try again"
                     buttonInstallUpdate.isEnabled = true
                     buttonCheckUpdate.isEnabled = true
+                    updateInstallInProgress = false
                     return@launch
                 }
                 textUpdateStatus.text = "Uploading 0%…"
@@ -552,7 +519,7 @@ class VehicleActivity : AppCompatActivity() {
                     )
                 }
                 textUpdateStatus.text = if (success) {
-                    "v${release.version} installed - disconnect from \"MespDrive\" wifi to restore internet"
+                    "v${release.version} installed - disconnect from \"$ssid\" wifi to restore internet"
                 } else {
                     "Update failed: $message"
                 }
@@ -560,9 +527,107 @@ class VehicleActivity : AppCompatActivity() {
                 if (success) {
                     pendingRelease = null
                     pendingFirmware = null
+                    buttonInstallUpdate.visibility = View.GONE
                 } else {
                     buttonInstallUpdate.isEnabled = true
                 }
+                updateInstallInProgress = false
+            }
+        }
+    }
+
+    /**
+     * Reads the board's running version over [link] and compares it against the latest
+     * GitHub release; if that's newer it's downloaded straight away (see
+     * setUpFirmwareUpdateUi()'s doc for why) and Install is offered.
+     *
+     * [auto] = fired on every board (re)connect, USB or BLE, per direct request, rather than
+     * by the Check button. Differences: a Toast on finding an update, since the driver didn't
+     * ask and may not be looking at the status line; failures (board didn't answer, GitHub
+     * unreachable - e.g. the phone still on the board's no-internet "MespDrive" wifi right
+     * after an install, when the rebooting board reconnects) stay silent instead of
+     * overwriting whatever the status line was saying; and the GitHub half is skipped if this
+     * same board version was already auto-checked within AUTO_UPDATE_CHECK_COOLDOWN_MS, so a
+     * flapping BLE link can't burn through GitHub's unauthenticated API rate limit
+     * (60 requests/hour). A board that reconnects on a *different* version (it was just
+     * updated) is always re-checked.
+     */
+    private fun checkForFirmwareUpdate(link: ServoLinkCommands?, auto: Boolean) {
+        if (updateCheckInProgress || updateInstallInProgress) return
+        val buttonCheckUpdate = findViewById<Button>(R.id.buttonCheckUpdate)
+        val buttonInstallUpdate = findViewById<Button>(R.id.buttonInstallUpdate)
+        val textUpdateStatus = findViewById<TextView>(R.id.textUpdateStatus)
+        updateCheckInProgress = true
+        buttonCheckUpdate.isEnabled = false
+        if (!auto) textUpdateStatus.text = "Checking board version…"
+        lifecycleScope.launch {
+            try {
+                // Up to 3 attempts - a cold connect's first command can still miss its reply
+                // (USB bring-up settling); expectPrefix keeps a boot banner or other stray
+                // line from being taken for the version.
+                var currentVersion: String? = null
+                if (link != null) {
+                    for (attempt in 1..3) {
+                        val result = withContext(Dispatchers.IO) { link.sendCommand("GETVERSION", 1500, "VERSION=") }
+                        currentVersion = (result as? CommandResult.Ok)?.response?.removePrefix("VERSION=")
+                        if (currentVersion != null) break
+                    }
+                }
+                if (currentVersion == null) {
+                    if (!auto) textUpdateStatus.text = "Could not read board version - connect via USB or Bluetooth first"
+                    return@launch
+                }
+                if (auto) {
+                    val now = System.currentTimeMillis()
+                    if (currentVersion == lastAutoCheckedBoardVersion && now - lastAutoCheckAtMs < AUTO_UPDATE_CHECK_COOLDOWN_MS) return@launch
+                    lastAutoCheckedBoardVersion = currentVersion
+                    lastAutoCheckAtMs = now
+                }
+                val board = FirmwareUpdater.Board.forVersion(currentVersion)
+                if (!auto) textUpdateStatus.text = "Board is v$currentVersion, checking GitHub…"
+                val internet = withContext(Dispatchers.IO) { getInternetNetwork() }
+                val release = withContext(Dispatchers.IO) { FirmwareUpdater.fetchLatestRelease(board, internet) }
+                when {
+                    release == null -> {
+                        if (!auto) textUpdateStatus.text = "Board v$currentVersion - could not reach GitHub"
+                        // Let the next connect retry rather than sitting out the cooldown on a
+                        // check that never actually happened.
+                        if (auto) lastAutoCheckAtMs = 0L
+                    }
+                    FirmwareUpdater.isNewer(release.version, currentVersion) -> {
+                        if (auto) {
+                            Toast.makeText(this@VehicleActivity, "Firmware update available for this board: v${release.version}", Toast.LENGTH_LONG).show()
+                        }
+                        val alreadyDownloaded = pendingRelease == release && pendingFirmware != null
+                        if (!alreadyDownloaded) {
+                            buttonInstallUpdate.visibility = View.GONE
+                            pendingRelease = null
+                            pendingFirmware = null
+                            textUpdateStatus.text = "Update v${release.version} available (board is v$currentVersion) - downloading…"
+                            val bytes = withContext(Dispatchers.IO) { FirmwareUpdater.download(release.downloadUrl, internet) }
+                            if (bytes == null) {
+                                textUpdateStatus.text = "Update v${release.version} available (board is v$currentVersion), but download failed"
+                                if (auto) lastAutoCheckAtMs = 0L
+                                return@launch
+                            }
+                            pendingRelease = release
+                            pendingFirmware = bytes
+                        }
+                        textUpdateStatus.text = "Update v${release.version} downloaded (board is v$currentVersion). Connect your " +
+                            "phone to the board's \"${board.apSsid}\" wifi (password 123456789), then tap Install."
+                        buttonInstallUpdate.visibility = View.VISIBLE
+                        buttonInstallUpdate.isEnabled = true
+                    }
+                    else -> {
+                        pendingRelease = null
+                        pendingFirmware = null
+                        buttonInstallUpdate.visibility = View.GONE
+                        textUpdateStatus.text = "Board v$currentVersion - up to date"
+                    }
+                }
+            } finally {
+                updateCheckInProgress = false
+                buttonCheckUpdate.isEnabled = true
             }
         }
     }
@@ -607,5 +672,9 @@ class VehicleActivity : AppCompatActivity() {
             bound = false
         }
         super.onDestroy()
+    }
+
+    private companion object {
+        const val AUTO_UPDATE_CHECK_COOLDOWN_MS = 10 * 60 * 1000L
     }
 }

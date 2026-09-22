@@ -312,60 +312,32 @@ class UsbServoBridge(
     /** Asks the board which channels its own Joystick X/Y are currently configured
      * for - "GETJOYCHANNELS" -> "JOYCHANNELS=<steer>,<throttle>" - see
      * ServoLink.setChannels()'s doc for why. Called automatically once per
-     * connect (openPort() above); the result being null just means an older
-     * firmware that doesn't recognize the command, or no reply within the
-     * timeout - callers should leave the existing channels in place either way,
-     * same as this class's own caller does. */
+     * connect (openPort() above); null means an older firmware that doesn't
+     * recognize the command, or no reply within the timeout - openPort() then
+     * leaves control disabled rather than guessing a channel.
+     *
+     * Goes through sendCommand() (not its own read loop anymore) so it's
+     * serialized with every other command by sendCommandMutex - e.g. the
+     * automatic GETVERSION update check VehicleActivity fires on every connect,
+     * which used to be able to race this for the port's read stream. Up to 3
+     * attempts, not 1 - confirmed on real hardware as a real gap: a single shot
+     * right after openPort() was unreliable specifically on a COLD connect (app
+     * launched with the board already plugged in, USB bring-up still settling),
+     * while a WARM reconnect consistently got a reply first try. */
     fun checkJoystickChannels(onResult: (steer: Int?, throttle: Int?) -> Unit) {
-        val p = port
-        if (p == null) {
-            onResult(null, null)
-            return
-        }
         scope.launch {
-            val previousHandler = onLineReceived
-            startReading()
-            try {
-                // Up to 3 attempts, not 1 - confirmed on real hardware as a real gap:
-                // a single 3s shot right after openPort() was unreliable specifically
-                // on a COLD connect (app launched with the board already plugged in -
-                // USB enumeration/CP2102 driver bring-up still settling), while a WARM
-                // reconnect (unplug/replug into an already-running app) consistently
-                // got a reply well within 3s. A failed attempt here silently left
-                // BOTH steerChannel/throttleChannel on this class's constructor
-                // placeholder defaults - matching the reported symptom exactly (one
-                // axis happening to still move something, since its placeholder
-                // coincided with a wired connector, the other not).
-                var channels: Pair<Int, Int>? = null
-                for (attempt in 1..3) {
-                    val result = CompletableDeferred<Pair<Int, Int>?>()
-                    onLineReceived = { line ->
-                        if (line.startsWith("JOYCHANNELS=")) {
-                            val parts = line.removePrefix("JOYCHANNELS=").split(",")
-                            result.complete(
-                                if (parts.size == 2) {
-                                    val steer = parts[0].toIntOrNull()
-                                    val throttle = parts[1].toIntOrNull()
-                                    if (steer != null && throttle != null) steer to throttle else null
-                                } else {
-                                    null
-                                },
-                            )
-                        } else {
-                            previousHandler?.invoke(line)
-                        }
-                    }
-                    synchronized(writeLock) { p.write("GETJOYCHANNELS\n".toByteArray(), 200) }
-                    channels = withTimeoutOrNull(1500) { result.await() }
-                    if (channels != null) break
+            var channels: Pair<Int, Int>? = null
+            for (attempt in 1..3) {
+                val result = sendCommand("GETJOYCHANNELS", 1500, "JOYCHANNELS=")
+                if (result is CommandResult.Ok) {
+                    val parts = result.response.removePrefix("JOYCHANNELS=").split(",")
+                    val steer = parts.getOrNull(0)?.toIntOrNull()
+                    val throttle = parts.getOrNull(1)?.toIntOrNull()
+                    if (parts.size == 2 && steer != null && throttle != null) channels = steer to throttle
                 }
-                onResult(channels?.first, channels?.second)
-            } catch (_: Exception) {
-                onResult(null, null)
-            } finally {
-                onLineReceived = previousHandler
-                stopReading()
+                if (channels != null) break
             }
+            onResult(channels?.first, channels?.second)
         }
     }
 
@@ -387,38 +359,18 @@ class UsbServoBridge(
      * command, or no reply within the timeout - callers should leave the existing
      * (generic RC default) calibration in place either way. */
     fun checkCalibration(onResult: (Calibration?) -> Unit) {
-        val p = port
-        if (p == null) {
-            onResult(null)
-            return
-        }
         scope.launch {
-            val previousHandler = onLineReceived
-            startReading()
-            try {
-                // Same retry reasoning as checkJoystickChannels() above.
-                var calibration: Calibration? = null
-                for (attempt in 1..3) {
-                    val result = CompletableDeferred<Calibration?>()
-                    onLineReceived = { line ->
-                        if (line.startsWith("CALIBRATION=")) {
-                            val parts = line.removePrefix("CALIBRATION=").split(",").mapNotNull { it.toIntOrNull() }
-                            result.complete(if (parts.size == 6) Calibration(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]) else null)
-                        } else {
-                            previousHandler?.invoke(line)
-                        }
-                    }
-                    synchronized(writeLock) { p.write("GETCALIBRATION\n".toByteArray(), 200) }
-                    calibration = withTimeoutOrNull(1500) { result.await() }
-                    if (calibration != null) break
+            // Same sendCommand()/retry reasoning as checkJoystickChannels() above.
+            var calibration: Calibration? = null
+            for (attempt in 1..3) {
+                val result = sendCommand("GETCALIBRATION", 1500, "CALIBRATION=")
+                if (result is CommandResult.Ok) {
+                    val parts = result.response.removePrefix("CALIBRATION=").split(",").mapNotNull { it.toIntOrNull() }
+                    if (parts.size == 6) calibration = Calibration(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5])
                 }
-                onResult(calibration)
-            } catch (_: Exception) {
-                onResult(null)
-            } finally {
-                onLineReceived = previousHandler
-                stopReading()
+                if (calibration != null) break
             }
+            onResult(calibration)
         }
     }
 
@@ -435,14 +387,14 @@ class UsbServoBridge(
     // coordination, is the fix - every call site (present or future) gets this for free.
     private val sendCommandMutex = Mutex()
 
-    override suspend fun sendCommand(command: String, timeoutMs: Long): CommandResult = sendCommandMutex.withLock {
+    override suspend fun sendCommand(command: String, timeoutMs: Long, expectPrefix: String?): CommandResult = sendCommandMutex.withLock {
         val p = port ?: return@withLock CommandResult.Error("not connected")
         val previousHandler = onLineReceived
         val result = CompletableDeferred<CommandResult>()
         onLineReceived = { line ->
             when {
                 line.startsWith("ERROR:") -> result.complete(CommandResult.Error(line.removePrefix("ERROR:")))
-                else -> result.complete(CommandResult.Ok(line))
+                expectPrefix == null || line.startsWith(expectPrefix) -> result.complete(CommandResult.Ok(line))
             }
         }
         startReading()

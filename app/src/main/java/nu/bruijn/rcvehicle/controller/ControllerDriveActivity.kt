@@ -811,11 +811,18 @@ class ControllerDriveActivity : AppCompatActivity() {
      * on screen fighting for thumb space with the gamepad in hand - hidden
      * whenever one's connected, back the instant it's unplugged. Re-checked on
      * every add/remove/change (not just once) since a gamepad can be plugged
-     * in or pulled at any point during a drive, not only at connect time. */
+     * in or pulled at any point during a drive, not only at connect time.
+     * The rear-view button too, per direct request - the gamepad's LB already
+     * does that (see onKeyDown). If it was toggled on via touch when the pad got
+     * plugged in, it's switched back to front first: a hidden toggle left on
+     * would otherwise have no on-screen way back. */
     private fun updateSliderVisibility() {
-        val visibility = if (isGamepadConnected()) View.GONE else View.VISIBLE
+        val gamepad = isGamepadConnected()
+        val visibility = if (gamepad) View.GONE else View.VISIBLE
         sliderSteer.visibility = visibility
         sliderThrottle.visibility = visibility
+        if (gamepad && rearViewActive) setRearView(false)
+        buttonRearView.visibility = visibility
     }
 
     /**

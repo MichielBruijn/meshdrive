@@ -91,6 +91,38 @@
         android:text="@string/vehicle_open_yggdrasil"
         android:visibility="gone" />
 
+    <!-- Firmware update: checked automatically on every board connect (USB or BLE), installed
+         over the board's own "MespDrive" wifi - see VehicleActivity.checkForFirmwareUpdate().
+         Outside debugSection so the driver actually sees it. buttonInstallUpdate stays hidden
+         until a check finds (and has downloaded) a newer release. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/buttonCheckUpdate"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/vehicle_check_update" />
+
+        <Button
+            android:id="@+id/buttonInstallUpdate"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:text="@string/vehicle_install_update"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/textUpdateStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp" />
+
     <!-- Everything below is diagnostic/rarely-needed: local debug steer/throttle sliders, raw
          Yggdrasil address, verbose control-link log. Hidden unless "Debug mode" is on
          (MainActivity) - see VehicleActivity.applyDebugVisibility(). -->
@@ -131,36 +163,6 @@
             android:max="200"
             android:progress="100" />
 
-        <!-- Firmware update over the same USB cable - see UsbServoBridge.checkFirmwareVersion()/
-             flashFirmware() and the firmware's own usbFirmwareUpdate(). buttonInstallUpdate
-             stays hidden until a check finds a newer release. -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/buttonCheckUpdate"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/vehicle_check_update" />
-
-            <Button
-                android:id="@+id/buttonInstallUpdate"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginStart="8dp"
-                android:text="@string/vehicle_install_update"
-                android:visibility="gone" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/textUpdateStatus"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp" />
 
         <TextView
             android:id="@+id/textOwnYggdrasilAddress"

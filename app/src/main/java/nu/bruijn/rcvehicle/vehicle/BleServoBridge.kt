@@ -54,6 +54,8 @@ class BleServoBridge(
     private var scanCallback: ScanCallback? = null
     private var mtuPayload = 20
     private var pendingWrite: CompletableDeferred<Boolean>? = null
+    private var pendingDescriptorWrite: CompletableDeferred<Boolean>? = null
+    private var pendingMtuChange: CompletableDeferred<Boolean>? = null
     private val lineBuffer = StringBuilder()
 
     var onLineReceived: ((String) -> Unit)? = null
@@ -177,36 +179,76 @@ class BleServoBridge(
                 return
             }
             rxCharacteristic = rx
+            // One coroutine, sequential - setupNotifications() awaits its own descriptor-write/
+            // MTU completion callbacks before returning (see its own doc), so neither
+            // resolveBoardConfig()'s first command nor anything a caller fires off
+            // onConnected(true) (VehicleActivity's automatic GETVERSION update check) is racing
+            // them for the GATT's single in-flight-operation slot - "connected" isn't reported
+            // until commands can actually get a reply. Confirmed on real hardware as a genuine,
+            // total-failure bug without this: resolveBoardConfig() used to fire the moment
+            // "BLE ready" logged (a separately-launched, not-awaited coroutine did the
+            // notification/MTU setup), and every one of its GATT writes was synchronously
+            // rejected (writeCharacteristic() returning false, not even queued) because the
+            // CCCD descriptor write/MTU negotiation were still in flight - all 3 retry attempts
+            // burned through in under a millisecond with no backoff between them, so
+            // resolveBoardConfig() gave up and left this permanently not-ready, well before the
+            // GATT bus actually freed up ~30-50ms later.
             scope.launch {
-                gattLock.withLock {
-                    try {
+                setupNotifications(g, tx)
+                // Dropped (or stop()ped) while setup was still awaiting its callbacks - that
+                // path already reported disconnected; announcing "ready" now would contradict it.
+                if (gatt !== g || rxCharacteristic == null) return@launch
+                log("BLE ready")
+                onConnected?.invoke(true)
+                startWatchdog()
+                resolveBoardConfig()
+            }
+        }
+
+        // Awaits its own descriptor-write/MTU-negotiation completion callbacks (not just
+        // queuing them and moving on) - see onServicesDiscovered's doc for why. Bounded
+        // timeouts, not indefinite: a callback that never fires (unlikely, but real hardware
+        // is real hardware) shouldn't wedge the connection forever.
+        private suspend fun setupNotifications(g: BluetoothGatt, tx: BluetoothGattCharacteristic) {
+            gattLock.withLock {
+                try {
+                    @Suppress("DEPRECATION")
+                    g.setCharacteristicNotification(tx, true)
+                    val cccd = tx.getDescriptor(CCCD_UUID)
+                    if (cccd != null) {
+                        val deferred = CompletableDeferred<Boolean>()
+                        pendingDescriptorWrite = deferred
                         @Suppress("DEPRECATION")
-                        g.setCharacteristicNotification(tx, true)
-                        val cccd = tx.getDescriptor(CCCD_UUID)
-                        if (cccd != null) {
-                            @Suppress("DEPRECATION")
-                            cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                            @Suppress("DEPRECATION")
-                            g.writeDescriptor(cccd)
+                        cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        @Suppress("DEPRECATION")
+                        if (g.writeDescriptor(cccd)) {
+                            withTimeoutOrNull(2000) { deferred.await() }
                         }
-                        g.requestMtu(517)
-                    } catch (_: SecurityException) {
+                        pendingDescriptorWrite = null
                     }
+                    val mtuDeferred = CompletableDeferred<Boolean>()
+                    pendingMtuChange = mtuDeferred
+                    if (g.requestMtu(517)) {
+                        withTimeoutOrNull(2000) { mtuDeferred.await() }
+                    }
+                    pendingMtuChange = null
+                } catch (_: SecurityException) {
                 }
             }
-            log("BLE ready")
-            onConnected?.invoke(true)
-            startWatchdog()
-            resolveBoardConfig()
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
             log("MTU changed: status=$status mtu=$mtu")
             if (status == BluetoothGatt.GATT_SUCCESS) mtuPayload = mtu - 3
+            pendingMtuChange?.complete(status == BluetoothGatt.GATT_SUCCESS)
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             pendingWrite?.complete(status == BluetoothGatt.GATT_SUCCESS)
+        }
+
+        override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            pendingDescriptorWrite?.complete(status == BluetoothGatt.GATT_SUCCESS)
         }
 
         @Suppress("DEPRECATION")
@@ -285,44 +327,42 @@ class BleServoBridge(
      * notification setup (the CCCD write/MTU negotiation above are fire-and-forget, not
      * awaited).
      */
-    private fun resolveBoardConfig() {
+    private suspend fun resolveBoardConfig() {
         readyToSend = false
-        scope.launch {
-            var channels: Pair<Int, Int>? = null
-            for (attempt in 1..3) {
-                val result = sendCommand("GETJOYCHANNELS", 1500)
-                if (result is CommandResult.Ok && result.response.startsWith("JOYCHANNELS=")) {
-                    val parts = result.response.removePrefix("JOYCHANNELS=").split(",")
-                    val steer = parts.getOrNull(0)?.toIntOrNull()
-                    val throttle = parts.getOrNull(1)?.toIntOrNull()
-                    if (steer != null && throttle != null) channels = steer to throttle
-                }
-                if (channels != null) break
+        var channels: Pair<Int, Int>? = null
+        for (attempt in 1..3) {
+            val result = sendCommand("GETJOYCHANNELS", 1500, "JOYCHANNELS=")
+            if (result is CommandResult.Ok) {
+                val parts = result.response.removePrefix("JOYCHANNELS=").split(",")
+                val steer = parts.getOrNull(0)?.toIntOrNull()
+                val throttle = parts.getOrNull(1)?.toIntOrNull()
+                if (steer != null && throttle != null) channels = steer to throttle
             }
-            if (channels == null) {
-                log("could not read board's servo channels - control disabled")
-                return@launch
-            }
-            val (steer, throttle) = channels
-            setChannels(steer, throttle)
-            log("using board's channels: steer=CH${steer + 1} throttle=CH${throttle + 1}")
-
-            var calibration: List<Int>? = null
-            for (attempt in 1..3) {
-                val result = sendCommand("GETCALIBRATION", 1500)
-                if (result is CommandResult.Ok && result.response.startsWith("CALIBRATION=")) {
-                    val parts = result.response.removePrefix("CALIBRATION=").split(",").mapNotNull { it.toIntOrNull() }
-                    if (parts.size == 6) calibration = parts
-                }
-                if (calibration != null) break
-            }
-            // null here just means older firmware / no reply - the generic 1000/1500/2000
-            // default stays (calibration range, unlike the channel itself, isn't the "wrong
-            // physical output" hazard the channel-guessing concern was about).
-            calibration?.let { c -> setCalibration(c[0], c[1], c[2], c[3], c[4], c[5]) }
-
-            readyToSend = true
+            if (channels != null) break
         }
+        if (channels == null) {
+            log("could not read board's servo channels - control disabled")
+            return
+        }
+        val (steer, throttle) = channels
+        setChannels(steer, throttle)
+        log("using board's channels: steer=CH${steer + 1} throttle=CH${throttle + 1}")
+
+        var calibration: List<Int>? = null
+        for (attempt in 1..3) {
+            val result = sendCommand("GETCALIBRATION", 1500, "CALIBRATION=")
+            if (result is CommandResult.Ok) {
+                val parts = result.response.removePrefix("CALIBRATION=").split(",").mapNotNull { it.toIntOrNull() }
+                if (parts.size == 6) calibration = parts
+            }
+            if (calibration != null) break
+        }
+        // null here just means older firmware / no reply - the generic 1000/1500/2000
+        // default stays (calibration range, unlike the channel itself, isn't the "wrong
+        // physical output" hazard the channel-guessing concern was about).
+        calibration?.let { c -> setCalibration(c[0], c[1], c[2], c[3], c[4], c[5]) }
+
+        readyToSend = true
     }
 
     // Same reasoning as UsbServoBridge's own sendCommandMutex: this shares one onLineReceived
@@ -332,7 +372,7 @@ class BleServoBridge(
     // reentrant and writeChunked() below still needs its own lock.
     private val sendCommandMutex = Mutex()
 
-    override suspend fun sendCommand(command: String, timeoutMs: Long): CommandResult = sendCommandMutex.withLock {
+    override suspend fun sendCommand(command: String, timeoutMs: Long, expectPrefix: String?): CommandResult = sendCommandMutex.withLock {
         Log.d("BleServoBridge", "sendCommand: $command (gatt=${gatt != null}, rx=${rxCharacteristic != null})")
         val g = gatt ?: return@withLock CommandResult.Error("not connected")
         val rx = rxCharacteristic ?: return@withLock CommandResult.Error("not connected")
@@ -341,7 +381,7 @@ class BleServoBridge(
         onLineReceived = { line ->
             when {
                 line.startsWith("ERROR:") -> result.complete(CommandResult.Error(line.removePrefix("ERROR:")))
-                else -> result.complete(CommandResult.Ok(line))
+                expectPrefix == null || line.startsWith(expectPrefix) -> result.complete(CommandResult.Ok(line))
             }
         }
         try {
