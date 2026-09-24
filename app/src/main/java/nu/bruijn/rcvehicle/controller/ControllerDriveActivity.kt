@@ -336,7 +336,7 @@ class ControllerDriveActivity : AppCompatActivity() {
                             healthyFpsStreak = 0
                             if (lowFpsStreak >= STEP_DOWN_AFTER_TICKS) {
                                 // Never auto-steps down into Ultra Low - see its
-                                // own doc: it targets ~15fps by design, which
+                                // own doc: it targets ~10fps by design, which
                                 // would keep this loop permanently below
                                 // HEALTHY_FPS_THRESHOLD and unable to ever step
                                 // back up on its own. Reachable only by tapping

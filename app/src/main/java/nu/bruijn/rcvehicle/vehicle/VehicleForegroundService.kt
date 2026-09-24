@@ -289,6 +289,10 @@ class VehicleForegroundService : Service() {
         }
     }
 
+    // Last quality the controller asked for - it sends that right after connecting, often
+    // before video has started, so start() must pick it up instead of always LOW.
+    @Volatile private var requestedQuality = VideoQuality.LOW
+
     private fun maybeStartVideo(controllerAddress: InetAddress, log: (String) -> Unit) {
         if (currentVideoControllerAddress == controllerAddress) return
         val isRetarget = currentVideoControllerAddress != null
@@ -318,7 +322,7 @@ class VehicleForegroundService : Service() {
             return
         }
         log("starting video to ${controllerAddress.hostAddress}")
-        // Starts at LOW, matching the controller's own default (ControllerDriveActivity) -
+        // Starts at requestedQuality (LOW until the controller says otherwise), matching the controller's own default (ControllerDriveActivity) -
         // confirmed on real hardware as a real bug starting at HIGH: the controller's
         // corrective "sync to whatever quality is actually shown" Quality message
         // (sent right after connecting) can race against - or simply get lost
@@ -329,9 +333,11 @@ class VehicleForegroundService : Service() {
         // message only needs to do anything when someone actually picks something
         // other than Low. VideoSender.openCamera()'s onConfigureFailed still falls
         // back further if even this gets rejected outright by the camera HAL.
-        videoSender.start(controllerAddress.hostAddress!!, VideoPacket.PORT, pairingSecret, VideoQuality.LOW)
+        videoSender.start(controllerAddress.hostAddress!!, VideoPacket.PORT, pairingSecret, requestedQuality)
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+        if (requestedQuality == VideoQuality.ULOW) {
+            log("audio: off (Ultra Low)")
+        } else if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
         ) {
             audioSender.onError = { msg -> log("audio: $msg") }
@@ -371,6 +377,7 @@ class VehicleForegroundService : Service() {
                         is ControlFrame.Decoded.Quality -> {
                             val quality = VideoQuality.fromIndex(decoded.presetIndex)
                             log("quality: ${quality.label}")
+                            requestedQuality = quality
                             videoSender.setQuality(quality)
                             applyAudioForQuality(quality, ::log)
                         }

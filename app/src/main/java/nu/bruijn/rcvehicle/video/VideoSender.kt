@@ -13,6 +13,7 @@ import android.hardware.camera2.CaptureRequest
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -213,6 +214,12 @@ class VideoSender(private val context: Context) {
      * controller re-sends the current preset).
      */
     fun setQuality(quality: VideoQuality) {
+        if (socket == null) {
+            // Not started yet - start() takes the quality; opening a pipeline here would
+            // run without a camera thread/socket.
+            currentQuality = quality
+            return
+        }
         if (quality == currentQuality && encoder != null) return
         closePipeline()
         openPipeline(quality)
@@ -241,6 +248,11 @@ class VideoSender(private val context: Context) {
             setInteger(MediaFormat.KEY_FRAME_RATE, quality.fps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
+            // Encoder drops surplus frames itself - the camera may not offer a range at
+            // exactly this fps (see pickFpsRange()).
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, quality.fps.toFloat())
+            }
         }
 
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
@@ -299,6 +311,17 @@ class VideoSender(private val context: Context) {
         encoder = null
     }
 
+    /** Exact (fps, fps) if the camera offers it, else the tightest supported range that
+     * contains fps (the encoder's KEY_MAX_FPS_TO_ENCODER trims the rest), else (fps, fps)
+     * as before. */
+    private fun pickFpsRange(characteristics: CameraCharacteristics, fps: Int): Range<Int> {
+        val ranges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            ?: return Range(fps, fps)
+        return ranges.firstOrNull { it.lower == fps && it.upper == fps }
+            ?: ranges.filter { fps in it.lower..it.upper }.minByOrNull { it.upper - it.lower }
+            ?: Range(fps, fps)
+    }
+
     private fun openCamera(surface: Surface) {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val desiredFacing = if (useFrontCamera) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
@@ -308,8 +331,9 @@ class VideoSender(private val context: Context) {
             onError?.invoke("no camera found")
             return
         }
-        sensorOrientation = manager.getCameraCharacteristics(cameraId)
-            .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+        val characteristics = manager.getCameraCharacteristics(cameraId)
+        sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+        val fpsRange = pickFpsRange(characteristics, currentQuality.fps)
 
         try {
             manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
@@ -330,7 +354,7 @@ class VideoSender(private val context: Context) {
                 // ranges, same tolerance as the rest of this class's HAL-quirk
                 // handling (onConfigureFailed() below already falls back to a
                 // lower preset on any capture-session rejection, fps included).
-                builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(currentQuality.fps, currentQuality.fps))
+                builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
                 try {
                     camera.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {

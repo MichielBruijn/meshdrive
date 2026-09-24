@@ -14,7 +14,7 @@ package nu.bruijn.rcvehicle.video
  */
 enum class VideoQuality(val width: Int, val height: Int, val bitrate: Int, val fps: Int, val label: String) {
     // Below LOW, not a smaller step on the same ladder - per direct request,
-    // battery/data: 15fps and half the bitrate (vs. the others' 20fps/80kbps),
+    // battery/data: 10fps and half the bitrate (vs. the others' 20fps/80kbps),
     // and VehicleForegroundService drops the vehicle's own ambient audio
     // entirely while this is selected (ControllerDriveActivity's Mute button/
     // mic talk-back are a separate, user-controlled channel, not touched by
@@ -27,7 +27,7 @@ enum class VideoQuality(val width: Int, val height: Int, val bitrate: Int, val f
     // with no HAL resolution-support risk at all (same reasoning LOW's own
     // bitrate-only cut below already relies on) - the only genuinely
     // HAL-safe way to go lower than LOW on this hardware.
-    ULOW(320, 240, 40_000, 15, "Ultra Low"),
+    ULOW(320, 240, 40_000, 10, "Ultra Low"),
     // Was 320x240 @ 300kbps, then briefly 160x120 @ 100kbps - confirmed on real
     // hardware that 160x120 breaks video entirely (Medium/High still worked, Low
     // alone didn't - no capture-session error either, just silently no video).
