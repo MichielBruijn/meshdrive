@@ -307,6 +307,9 @@ class YggdrasilVpnService : VpnService() {
     }
 
     private fun start(candidates: List<String>) {
+        // Every startForegroundService() needs its own startForeground(), even when the
+        // service is already running - otherwise Android raises an ANR a few seconds later.
+        startForeground(NOTIFICATION_ID, buildNotification())
         if (!running.compareAndSet(false, true)) {
             // Already running (the service outlives mode picks) - still take a changed peer
             // list, else a custom peer saved in debug never applies until the app is killed.
@@ -320,18 +323,18 @@ class YggdrasilVpnService : VpnService() {
             return
         }
 
-        val notification = Notification.Builder(this, notificationChannel())
-            .setContentTitle(getString(nu.bruijn.rcvehicle.R.string.app_name))
-            .setContentText(getString(nu.bruijn.rcvehicle.R.string.yggdrasil_notification_text))
-            .setSmallIcon(android.R.drawable.ic_menu_compass)
-            .build()
-        startForeground(NOTIFICATION_ID, notification)
-
         registerWifiCallback()
         val monitor = PeerMonitor(candidates)
         peerMonitor = monitor
         monitorThread = thread(name = "YggdrasilPeerMonitor") { monitor.run() }
     }
+
+    private fun buildNotification(): Notification =
+        Notification.Builder(this, notificationChannel())
+            .setContentTitle(getString(nu.bruijn.rcvehicle.R.string.app_name))
+            .setContentText(getString(nu.bruijn.rcvehicle.R.string.yggdrasil_notification_text))
+            .setSmallIcon(android.R.drawable.ic_menu_compass)
+            .build()
 
     private fun stop() {
         if (!running.compareAndSet(true, false)) return
