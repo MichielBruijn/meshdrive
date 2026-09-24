@@ -222,7 +222,11 @@ class MainActivity : AppCompatActivity() {
             // even if start() is never subsequently called. A check placed
             // after prepare()/consent (where it used to live) was already too
             // late - the other app's session was gone by then regardless.
-            val externalAddress = nu.bruijn.rcvehicle.yggdrasil.ExternalYggdrasilDetector.currentAddress()
+            // Our own running service also owns a 200::/7 address - without this check it was
+            // taken for an external app, so start() (and thus a changed peer list) was skipped
+            // on every mode pick after the first.
+            val externalAddress = if (YggdrasilController.isOwnServiceRunning()) null
+                else nu.bruijn.rcvehicle.yggdrasil.ExternalYggdrasilDetector.currentAddress()
             android.util.Log.d("RCDebug", "external Yggdrasil check before mode start: $externalAddress")
             if (externalAddress != null) {
                 launchModeActivity(mode)

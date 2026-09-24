@@ -119,6 +119,8 @@ class YggdrasilVpnService : VpnService() {
         @Volatile private var instance: YggdrasilVpnService? = null
 
         val runningAddress: String? get() = instance?.addressString
+        /** Our own service is up (mesh connected or still retrying). */
+        val isRunning: Boolean get() = instance?.running?.get() == true
         val activePeer: String? get() = instance?.activePeerUri
         val peerStatuses: List<PeerLatencyProbe.Status> get() = instance?.latestStatuses ?: emptyList()
 

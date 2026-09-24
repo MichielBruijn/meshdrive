@@ -26,6 +26,10 @@ object YggdrasilController {
         context.startForegroundService(intent)
     }
 
+    /** True while MeshDrive's own Yggdrasil service runs - its tun0 must not be mistaken
+     * for an external Yggdrasil app by ExternalYggdrasilDetector. */
+    fun isOwnServiceRunning(): Boolean = YggdrasilVpnService.isRunning
+
     fun stop(context: Context) {
         val intent = Intent(context, YggdrasilVpnService::class.java).apply {
             action = YggdrasilVpnService.ACTION_STOP
