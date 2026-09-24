@@ -176,6 +176,7 @@ class YggdrasilVpnService : VpnService() {
     private val meshUp = AtomicBoolean() // just the current yggdrasil+TUN session - toggles on every reconnect
 
     private var monitorThread: Thread? = null
+    private var peerMonitor: PeerMonitor? = null
     private var readerThread: Thread? = null
     private var writerThread: Thread? = null
     private var tunnel: ParcelFileDescriptor? = null
@@ -300,7 +301,18 @@ class YggdrasilVpnService : VpnService() {
     }
 
     private fun start(candidates: List<String>) {
-        if (!running.compareAndSet(false, true)) return
+        if (!running.compareAndSet(false, true)) {
+            // Already running (the service outlives mode picks) - still take a changed peer
+            // list, else a custom peer saved in debug never applies until the app is killed.
+            // PeerMonitor then sees the active peer missing from the new pool and switches.
+            val monitor = peerMonitor ?: return
+            if (monitor.candidates != candidates) {
+                Log.i(TAG, "peer candidates changed - re-evaluating")
+                monitor.candidates = candidates
+                monitorThread?.interrupt()
+            }
+            return
+        }
 
         val notification = Notification.Builder(this, notificationChannel())
             .setContentTitle(getString(nu.bruijn.rcvehicle.R.string.app_name))
@@ -310,7 +322,9 @@ class YggdrasilVpnService : VpnService() {
         startForeground(NOTIFICATION_ID, notification)
 
         registerWifiCallback()
-        monitorThread = thread(name = "YggdrasilPeerMonitor") { PeerMonitor(candidates).run() }
+        val monitor = PeerMonitor(candidates)
+        peerMonitor = monitor
+        monitorThread = thread(name = "YggdrasilPeerMonitor") { monitor.run() }
     }
 
     private fun stop() {
@@ -318,6 +332,7 @@ class YggdrasilVpnService : VpnService() {
         unregisterWifiCallback()
         monitorThread?.interrupt()
         monitorThread = null
+        peerMonitor = null
         disconnectMesh()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -470,7 +485,7 @@ class YggdrasilVpnService : VpnService() {
      * periodically and switching when it's worth the reconnect cost. Runs for
      * as long as the outer service does (see [running]) on its own thread.
      */
-    private inner class PeerMonitor(private val candidates: List<String>) {
+    private inner class PeerMonitor(@Volatile var candidates: List<String>) {
         private var activeLatencyMs: Long? = null
         private var consecutiveTotalFailures = 0
 
