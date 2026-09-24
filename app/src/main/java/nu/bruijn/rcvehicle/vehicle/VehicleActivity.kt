@@ -352,7 +352,7 @@ class VehicleActivity : AppCompatActivity() {
                 } else {
                     statuses.joinToString("\n") { s ->
                         val marker = if (s.uri == active) "*" else " "
-                        val latency = s.latencyMs?.let { "${it}ms" } ?: "unreachable"
+                        val latency = s.latencyMs?.let { "${it}ms" } ?: if (s.untested) "not pre-tested (quic)" else "unreachable"
                         "$marker ${s.uri} - $latency"
                     }
                 }

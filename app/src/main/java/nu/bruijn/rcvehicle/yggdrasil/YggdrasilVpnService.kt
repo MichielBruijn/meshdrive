@@ -113,6 +113,10 @@ class YggdrasilVpnService : VpnService() {
         // for noise this close, this soon.
         private const val MIN_SETTLE_MS = 15_000L
 
+        // An untested (quic) peer that failed to come up isn't retried for this long, so a
+        // quic-only list rotates through its entries instead of hammering the first one.
+        private const val UNTESTED_RETRY_BACKOFF_MS = 30_000L
+
         // Not a binder connection: callers (YggdrasilController) only ever need a
         // cheap "is it up, what's its address/peer status" poll from another
         // Activity, nowhere near hot enough to justify bindService()'s ceremony.
@@ -490,6 +494,37 @@ class YggdrasilVpnService : VpnService() {
     private inner class PeerMonitor(@Volatile var candidates: List<String>) {
         private var activeLatencyMs: Long? = null
         private var consecutiveTotalFailures = 0
+        private val untestedFailedAtMs = mutableMapOf<String, Long>()
+
+        /** Replaces the active peer's probe result with what the Yggdrasil core itself reports,
+         * when that peer couldn't be pre-measured (quic). Runs after MIN_SETTLE_MS, so a peer
+         * that's still not Up by now counts as failed. */
+        private fun withCoreStatus(results: List<PeerLatencyProbe.Status>): List<PeerLatencyProbe.Status> {
+            val current = activePeerUri ?: return results
+            if (!meshUp.get() || results.none { it.uri == current && it.untested }) return results
+            val coreLatencyMs = coreUpLatencyMs()
+            if (coreLatencyMs == null) untestedFailedAtMs[current] = System.currentTimeMillis()
+            return results.map { if (it.uri == current) PeerLatencyProbe.Status(current, coreLatencyMs) else it }
+        }
+
+        /** Latency (ms) of the configured peer if the core reports it Up, else null. Only one
+         * peer is ever configured at a time (buildConfig()), so any Up entry is ours. */
+        private fun coreUpLatencyMs(): Long? = try {
+            val peers = JSONArray(yggdrasil.peersJSON ?: "[]")
+            (0 until peers.length()).map { peers.getJSONObject(it) }
+                .firstOrNull { it.optBoolean("Up") }
+                ?.let { it.optLong("Latency", 0L) / 1_000_000L }
+        } catch (_: Exception) {
+            null
+        }
+
+        private fun nextUntested(results: List<PeerLatencyProbe.Status>): PeerLatencyProbe.Status? {
+            val now = System.currentTimeMillis()
+            return results.firstOrNull { s ->
+                s.untested && s.uri != activePeerUri &&
+                    now - (untestedFailedAtMs[s.uri] ?: 0L) > UNTESTED_RETRY_BACKOFF_MS
+            }
+        }
 
         fun run() {
             while (running.get()) {
@@ -536,7 +571,7 @@ class YggdrasilVpnService : VpnService() {
                         }
                     }
                 }
-                val results = PeerLatencyProbe.measureAll(candidates)
+                val results = withCoreStatus(PeerLatencyProbe.measureAll(candidates))
                 latestStatuses = results
                 evaluate(results)
                 val interval = if (meshUp.get()) STEADY_INTERVAL_MS else RETRY_INTERVAL_MS
@@ -552,7 +587,9 @@ class YggdrasilVpnService : VpnService() {
         }
 
         private fun evaluate(results: List<PeerLatencyProbe.Status>) {
-            val best = results.filter { it.latencyMs != null }.minByOrNull { it.latencyMs!! } ?: run {
+            // Measured-reachable peers first; untested (quic) ones only when nothing measured is.
+            val best = results.filter { it.latencyMs != null }.minByOrNull { it.latencyMs!! }
+                ?: nextUntested(results) ?: run {
                 // Nothing reachable this round - if we were connected, the active
                 // peer is presumably among the now-unreachable ones; tear down so
                 // the app-level UI reflects reality instead of showing a stale
@@ -588,8 +625,8 @@ class YggdrasilVpnService : VpnService() {
             val shouldSwitch = when {
                 current == null -> true
                 results.find { it.uri == current }?.latencyMs == null -> true // current died
-                best.uri != current && activeLatencyMs != null &&
-                    best.latencyMs!! < activeLatencyMs!! * SWITCH_IMPROVEMENT_FACTOR -> true
+                best.uri != current && activeLatencyMs != null && best.latencyMs != null &&
+                    best.latencyMs < activeLatencyMs!! * SWITCH_IMPROVEMENT_FACTOR -> true
                 else -> false
             }
 
@@ -597,7 +634,7 @@ class YggdrasilVpnService : VpnService() {
                 if (meshUp.get()) disconnectMesh()
                 if (connectMesh(best.uri)) {
                     activeLatencyMs = best.latencyMs
-                    Log.i(TAG, "connected via ${best.uri} (${best.latencyMs}ms)")
+                    Log.i(TAG, "connected via ${best.uri} (${best.latencyMs?.let { "${it}ms" } ?: "untested, checking core"})")
                 } else {
                     activeLatencyMs = null
                 }

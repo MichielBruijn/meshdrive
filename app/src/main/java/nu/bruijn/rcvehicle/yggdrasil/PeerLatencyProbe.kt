@@ -15,14 +15,20 @@ import java.net.URI
  * candidate, every monitor cycle, for every candidate in the pool.
  */
 object PeerLatencyProbe {
-    data class Status(val uri: String, val latencyMs: Long?, val checkedAtMs: Long = System.currentTimeMillis())
+    /** [untested]: can't be pre-measured (quic:// is UDP) - PeerMonitor tries it for real and
+     * asks the Yggdrasil core whether it came up instead. */
+    data class Status(
+        val uri: String,
+        val latencyMs: Long?,
+        val checkedAtMs: Long = System.currentTimeMillis(),
+        val untested: Boolean = false,
+    )
 
     private const val CONNECT_TIMEOUT_MS = 3000
 
     /** null latency means unreachable (timed out, refused, DNS lookup failed, or
-     * an unparsable/unprobeable URI - quic:// peers are UDP-based and can't be
-     * measured this way, so they're reported as unreachable rather than guessed
-     * at). DNS resolution happens before the clock starts - deliberately not
+     * an unparsable URI). quic:// peers are UDP-based and can't be measured
+     * this way - they come back [Status.untested] once their host resolves. DNS resolution happens before the clock starts - deliberately not
      * counted, since it's a one-off, often-cached lookup cost rather than part of
      * the actual network path to the peer, and mixing it into the timing would
      * unfairly penalize hostname-based peers against IP-literal ones regardless
@@ -31,8 +37,12 @@ object PeerLatencyProbe {
         val parsed = runCatching { URI(peerUri) }.getOrNull()
         val host = parsed?.host
         val port = parsed?.port ?: -1
-        if (parsed == null || host == null || port !in 1..65535 || parsed.scheme !in setOf("tcp", "tls")) {
+        if (parsed == null || host == null || port !in 1..65535 || parsed.scheme !in setOf("tcp", "tls", "quic")) {
             return Status(peerUri, null)
+        }
+        if (parsed.scheme == "quic") {
+            val resolves = runCatching { InetAddress.getByName(host) }.isSuccess
+            return Status(peerUri, null, untested = resolves)
         }
         val resolved = try {
             InetAddress.getByName(host)
