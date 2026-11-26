@@ -91,8 +91,8 @@ class ControlLink {
      * does a direct syscall and would throw NetworkOnMainThreadException otherwise
      * (unlike OkHttp/WebRTC's send(), which just enqueues onto their own thread).
      */
-    fun send(steer: Float, throttle: Float, seq: Int) {
-        sendBytes(ControlFrame.encodeControl(steer, throttle, seq))
+    fun send(steer: Float, throttle: Float) {
+        sendBytes(ControlFrame.encodeControl(steer, throttle, SystemClock.elapsedRealtime()))
     }
 
     /** Controller side: toggle the vehicle's Steering Limit. Rare, unlike send() above. */
@@ -156,7 +156,7 @@ class ControlLink {
      */
     fun startPing(
         intervalMs: Long = 1000,
-        onRtt: (Long) -> Unit,
+        onRtt: (rttMs: Long, pong: ControlFrame.Decoded.Pong) -> Unit,
         onTelemetry: ((ControlFrame.Decoded.Telemetry) -> Unit)? = null,
         onBusy: (() -> Unit)? = null,
     ) {
@@ -176,7 +176,7 @@ class ControlLink {
                     totalBytesReceived += packet.length
                     val verified = SignedFrame.verify(packet.data, packet.length, secret) ?: continue
                     when (val decoded = ControlFrame.decode(verified, verified.size)) {
-                        is ControlFrame.Decoded.Pong -> onRtt(SystemClock.elapsedRealtime() - decoded.sentAtMs)
+                        is ControlFrame.Decoded.Pong -> onRtt(SystemClock.elapsedRealtime() - decoded.sentAtMs, decoded)
                         is ControlFrame.Decoded.Telemetry -> onTelemetry?.invoke(decoded)
                         is ControlFrame.Decoded.Busy -> onBusy?.invoke()
                         else -> {}
@@ -223,6 +223,7 @@ class ControlLink {
      * vehicle regardless of who's currently driving it.
      */
     private var listenPort: Int = 0
+    private val freshness = ControlFreshness()
     private var listenCallback: ((ControlFrame.Decoded, InetAddress) -> Unit)? = null
 
     fun listen(port: Int, secret: ByteArray, onReceived: (ControlFrame.Decoded, InetAddress) -> Unit) {
@@ -257,7 +258,7 @@ class ControlLink {
                         // Latency probe reply - handled here rather than surfaced to
                         // onReceived, since every caller of listen() just wants real
                         // control traffic, not to know about the debug ping/pong.
-                        val pong = SignedFrame.sign(ControlFrame.encodePong(decoded.sentAtMs), secret)
+                        val pong = SignedFrame.sign(ControlFrame.encodePong(decoded.sentAtMs, freshness.lagging), secret)
                         try {
                             sock.send(DatagramPacket(pong, pong.size, packet.address, packet.port))
                         } catch (_: Exception) {
@@ -268,8 +269,12 @@ class ControlLink {
                     val owner = activeControllerAddress
                     val ownerTimedOut = now - lastAcceptedAtMs > OWNERSHIP_TIMEOUT_MS
                     if (owner == null || ownerTimedOut || owner == packet.address) {
+                        if (owner != packet.address || ownerTimedOut) freshness.reset()
                         activeControllerAddress = packet.address
                         lastAcceptedAtMs = now
+                        if (decoded is ControlFrame.Decoded.Control &&
+                            !freshness.accept(decoded.sentAtMs, SystemClock.elapsedRealtime(), decoded.throttle)
+                        ) continue
                         onReceived(decoded, packet.address)
                     } else if (now - lastBusyReplyAtMs > BUSY_REPLY_INTERVAL_MS) {
                         lastBusyReplyAtMs = now

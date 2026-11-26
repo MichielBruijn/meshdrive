@@ -284,9 +284,7 @@ class BleServoBridge(
     private fun writeLine(line: String, writeType: Int) {
         val g = gatt ?: return
         val rx = rxCharacteristic ?: return
-        scope.launch {
-            gattLock.withLock { writeChunked(g, rx, "$line\n".toByteArray(), writeType) }
-        }
+        enqueueWrite { gattLock.withLock { writeChunked(g, rx, "$line\n".toByteArray(), writeType) } }
     }
 
     @Suppress("DEPRECATION")

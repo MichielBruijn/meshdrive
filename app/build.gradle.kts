@@ -12,8 +12,8 @@ android {
         applicationId = "nu.bruijn.rcvehicle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 71
-        versionName = "0.3.68"
+        versionCode = 72
+        versionName = "1.0.0"
         buildConfigField("long", "EXPIRES_AT_MS", "0L")
     }
 
@@ -73,4 +73,5 @@ dependencies {
     implementation("com.github.mik3y:usb-serial-for-android:3.11.0")
     implementation("com.google.zxing:core:3.5.3") // QR generation (vehicle side)
     implementation("com.journeyapps:zxing-android-embedded:4.3.0") // QR scanning (controller side)
+    testImplementation("junit:junit:4.13.2")
 }

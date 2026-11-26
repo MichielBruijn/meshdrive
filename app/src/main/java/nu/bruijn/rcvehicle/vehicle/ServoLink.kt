@@ -4,6 +4,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -26,6 +28,20 @@ abstract class ServoLink(
     private var steerChannel: Int? = null
     private var throttleChannel: Int? = null
     protected val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // One writer, in order, at most 8 pending: a stalled port must neither reorder commands (a stale
+    // throttle landing after a newer neutral - one launch per write did that) nor pile up old ones.
+    private val writes = Channel<suspend () -> Unit>(8, BufferOverflow.DROP_OLDEST)
+
+    init {
+        // Best-effort, a failed write is fine: the failsafe/next tick follows.
+        scope.launch { for (write in writes) runCatching { write() } }
+    }
+
+    /** All per-tick board writes go through here - see [writes]. */
+    protected fun enqueueWrite(write: suspend () -> Unit) {
+        writes.trySend(write)
+    }
     private var lastControlAtMs = 0L
     private var watchdogJob: Job? = null
 

@@ -297,16 +297,7 @@ class UsbServoBridge(
 
     private fun writeLine(line: String) {
         val p = port ?: return
-        scope.launch {
-            try {
-                synchronized(writeLock) {
-                    p.write("$line\n".toByteArray(), 200)
-                }
-            } catch (_: Exception) {
-                // best-effort, same reasoning as the wifi path - a dropped write
-                // is fine, the failsafe/next tick handles it
-            }
-        }
+        enqueueWrite { synchronized(writeLock) { p.write("$line\n".toByteArray(), 200) } }
     }
 
     /** Asks the board which channels its own Joystick X/Y are currently configured

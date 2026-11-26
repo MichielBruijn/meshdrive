@@ -110,7 +110,6 @@ class ControllerDriveActivity : AppCompatActivity() {
     private val micSender = AudioSender(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
     private val tickHandler = Handler(Looper.getMainLooper())
     private var tickRunnable: Runnable? = null
-    private var seq = 0
     private var currentRotation = 0
 
     // Latest joystick positions, read by the tick loop - not sent directly from
@@ -154,6 +153,9 @@ class ControllerDriveActivity : AppCompatActivity() {
     // the kind of silent failure this needs to catch.
     private var lastPongAtMs = 0L
     private var connectStartedAtMs = 0L
+    // From the latest Pong - see ControlFrame.Decoded.Pong.
+    private var vehicleLagging = false
+    private var oldVehicle = false
 
     // Set whenever the vehicle rejects a Control frame because another
     // controller already owns it (ControlLink.listen()'s ownership lock) -
@@ -410,10 +412,12 @@ class ControllerDriveActivity : AppCompatActivity() {
                     controlLink.connect(address, ControlLink.PORT, secret)
                     log("UDP control link connected to $address:${ControlLink.PORT}")
                     controlLink.startPing(
-                        onRtt = { rtt ->
+                        onRtt = { rtt, pong ->
                             runOnUiThread {
                                 lastLatencyMs = rtt
                                 lastPongAtMs = System.currentTimeMillis()
+                                vehicleLagging = pong.vehicleLagging
+                                oldVehicle = pong.oldVehicle
                                 updateDebugOverlay()
                             }
                         },
@@ -645,7 +649,7 @@ class ControllerDriveActivity : AppCompatActivity() {
         // steady heartbeat is what the vehicle-side failsafe is designed to key off.
         tickRunnable = object : Runnable {
             override fun run() {
-                controlLink.send(steerX, throttleY, seq++)
+                controlLink.send(steerX, throttleY)
 
                 if (!address.isNullOrEmpty()) {
                     val now = System.currentTimeMillis()
@@ -657,6 +661,8 @@ class ControllerDriveActivity : AppCompatActivity() {
                         now - lastBusyAtMs < 3000 -> "⚠ Vehicle already connected to another controller"
                         lastPongAtMs == 0L && now - connectStartedAtMs > 5000 -> "⚠ No connection to vehicle"
                         lastPongAtMs != 0L && now - lastPongAtMs > 2000 -> "⚠ Vehicle connection lost (${(now - lastPongAtMs) / 1000}s)"
+                        oldVehicle -> "⚠ Vehicle runs an older MeshDrive - update both phones to 1.0 or newer"
+                        vehicleLagging -> "⚠ Too much delay - vehicle stopped. Release throttle to resume"
                         else -> null
                     }
                     if (warning != lastWarningText) {
@@ -796,7 +802,12 @@ class ControllerDriveActivity : AppCompatActivity() {
     private val inputManager by lazy { getSystemService(Context.INPUT_SERVICE) as InputManager }
     private val inputDeviceListener = object : InputManager.InputDeviceListener {
         override fun onInputDeviceAdded(deviceId: Int) = updateSliderVisibility()
-        override fun onInputDeviceRemoved(deviceId: Int) = updateSliderVisibility()
+        override fun onInputDeviceRemoved(deviceId: Int) {
+            // A pad unplugged mid-throttle sends no final "stick centered" event - don't keep driving on it.
+            steerX = 0f
+            throttleY = 0f
+            updateSliderVisibility()
+        }
         override fun onInputDeviceChanged(deviceId: Int) = updateSliderVisibility()
     }
 
@@ -839,6 +850,15 @@ class ControllerDriveActivity : AppCompatActivity() {
      * untouched alongside this; whichever input moved most recently simply
      * wins until the other one moves.
      */
+    // Stick/touch releases while another window (shade, system dialog) has focus never reach us.
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) {
+            steerX = 0f
+            throttleY = 0f
+        }
+    }
+
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         if (event.action == MotionEvent.ACTION_MOVE && event.isFromSource(InputDevice.SOURCE_JOYSTICK)) {
             steerX = applyStickDeadzone(event.getAxisValue(MotionEvent.AXIS_X))

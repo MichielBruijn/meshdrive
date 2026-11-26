@@ -21,17 +21,19 @@ object ControlFrame {
     private const val TYPE_TELEMETRY: Byte = 0x08
     private const val TYPE_STEER_LIMIT_CONFIG: Byte = 0x09
     private const val TYPE_BUSY: Byte = 0x0A
-    private const val CONTROL_SIZE = 9
+    private const val CONTROL_SIZE = 13 // type, steer, throttle, sentAtMs (1.0+; was 9 with an int seq)
     private const val TIMESTAMP_SIZE = 9 // type + long
+    private const val PONG_SIZE = 10 // type + long + lagging flag (1.0+)
     private const val TELEMETRY_SIZE = 1 + 1 + 4 + 8 + 8 // type, hasFix, speed float, lat/lon doubles
     private const val STEER_LIMIT_CONFIG_SIZE = 1 + 4 + 4 // type, maxSpeedKmh float, reductionFraction float
 
-    fun encodeControl(steer: Float, throttle: Float, seq: Int): ByteArray {
+    /** [sentAtMs] = the controller's SystemClock.elapsedRealtime(), see ControlFreshness. */
+    fun encodeControl(steer: Float, throttle: Float, sentAtMs: Long): ByteArray {
         val bb = ByteBuffer.allocate(CONTROL_SIZE).order(ByteOrder.LITTLE_ENDIAN)
         bb.put(TYPE_CONTROL)
         bb.putShort((steer.coerceIn(-1f, 1f) * 1000).toInt().toShort())
         bb.putShort((throttle.coerceIn(-1f, 1f) * 1000).toInt().toShort())
-        bb.putInt(seq)
+        bb.putLong(sentAtMs)
         return bb.array()
     }
 
@@ -42,7 +44,9 @@ object ControlFrame {
      * carrying the same timestamp so the controller can compute round-trip time without
      * needing a separate sequence-matching scheme. */
     fun encodePing(sentAtMs: Long): ByteArray = encodeTimestamp(TYPE_PING, sentAtMs)
-    fun encodePong(sentAtMs: Long): ByteArray = encodeTimestamp(TYPE_PONG, sentAtMs)
+    /** [lagging]: the vehicle is dropping this controller's frames for arriving late. */
+    fun encodePong(sentAtMs: Long, lagging: Boolean): ByteArray =
+        encodeTimestamp(TYPE_PONG, sentAtMs) + (if (lagging) 1 else 0).toByte()
 
     /** Controller -> vehicle: switch the video encoder to VideoQuality preset [presetIndex]. */
     fun encodeQuality(presetIndex: Int): ByteArray = byteArrayOf(TYPE_QUALITY, presetIndex.toByte())
@@ -90,10 +94,11 @@ object ControlFrame {
     }
 
     sealed class Decoded {
-        data class Control(val steer: Float, val throttle: Float, val seq: Int) : Decoded()
+        data class Control(val steer: Float, val throttle: Float, val sentAtMs: Long) : Decoded()
         data class SteerLimit(val enabled: Boolean) : Decoded()
         data class Ping(val sentAtMs: Long) : Decoded()
-        data class Pong(val sentAtMs: Long) : Decoded()
+        /** [oldVehicle]: a pre-1.0 vehicle (9-byte Pong) - it ignores this app's control frames. */
+        data class Pong(val sentAtMs: Long, val vehicleLagging: Boolean, val oldVehicle: Boolean) : Decoded()
         data class Quality(val presetIndex: Int) : Decoded()
         data class Camera(val useFront: Boolean) : Decoded()
         data class TelemetryEnable(val enabled: Boolean) : Decoded()
@@ -111,8 +116,7 @@ object ControlFrame {
                 bb.position(1)
                 val steer = bb.short / 1000f
                 val throttle = bb.short / 1000f
-                val seq = bb.int
-                Decoded.Control(steer, throttle, seq)
+                Decoded.Control(steer, throttle, bb.long)
             }
             TYPE_STEER_LIMIT -> {
                 if (length != 2) return null
@@ -123,8 +127,9 @@ object ControlFrame {
                 Decoded.Ping(ByteBuffer.wrap(bytes, 1, 8).order(ByteOrder.LITTLE_ENDIAN).long)
             }
             TYPE_PONG -> {
-                if (length != TIMESTAMP_SIZE) return null
-                Decoded.Pong(ByteBuffer.wrap(bytes, 1, 8).order(ByteOrder.LITTLE_ENDIAN).long)
+                if (length != TIMESTAMP_SIZE && length != PONG_SIZE) return null
+                val sentAtMs = ByteBuffer.wrap(bytes, 1, 8).order(ByteOrder.LITTLE_ENDIAN).long
+                Decoded.Pong(sentAtMs, vehicleLagging = length == PONG_SIZE && bytes[9] == 1.toByte(), oldVehicle = length == TIMESTAMP_SIZE)
             }
             TYPE_QUALITY -> {
                 if (length != 2) return null
