@@ -11,13 +11,14 @@ mesh network, which is built into the app. There is no server, no account, no po
 and it works behind carrier NAT.
 
 ```
- ┌──────────────── controller phone ───────────────┐                ┌───────────────── vehicle phone ─────────────────┐
- │ touch sliders / gamepad ──► control  (UDP 7861) ─┼───────────────►│ ControlLink ──► ServoLink ──USB/BLE──► ESP32 ──► servos/ESC
- │ live video  ◄──────────────  video   (UDP 7862) ◄┼── Yggdrasil ───┤◄── camera (H.264)
- │ speaker     ◄──────────────  audio   (UDP 7863) ◄┼──   mesh   ────┤◄── microphone (AAC)
- │ talk-back mic ───────────►   audio   (UDP 7864) ─┼───────────────►│──► speaker
- └──────────────────────────────────────────────────┘                └──────────────────────────────────────────────────┘
-          every packet HMAC-signed with the vehicle's pairing secret · Yggdrasil encrypts end to end
+ CONTROLLER PHONE                                         VEHICLE PHONE
+┌──────────────────┐                                ┌──────────────────┐  USB  ┌───────┐
+│ sliders/gamepad ─┼── control  UDP 7861 ─────────► │ failsafe checks ─┼──────►│ ESP32 ├─► servos
+│ screen        ◄──┼── video    UDP 7862 ────────── │◄─ camera         │  OTG  └───────┘   + ESC
+│ speaker       ◄──┼── audio    UDP 7863 ────────── │◄─ microphone     │
+│ mic (talk-back) ─┼── audio    UDP 7864 ─────────► │ ─► speaker       │
+└──────────────────┘      over the Yggdrasil mesh   └──────────────────┘
+       every packet HMAC-signed · Yggdrasil encrypts end to end
 ```
 
 > **Version 1.0 changed the control protocol.** Both phones must run MeshDrive 1.0 or newer.
